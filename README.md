@@ -1,4 +1,4 @@
-```markdown
+
 # SoroPy 🚀
 
 **حرفه‌ای‌ترین کتابخانه پایتون برای سروش پلاس**
@@ -214,4 +214,4 @@ MIT License - آزاد برای استفاده شخصی و تجاری
   <a href="https://github.com/Mrhjf/soropy">GitHub</a> •
   <a href="https://t.me/mr_hjf">تلگرام</a>
 </p>
-```
+
