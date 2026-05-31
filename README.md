@@ -36,7 +36,7 @@ pip install soropy
 
 
 
----
+
 
 ## 📬 ارتباط با توسعه‌دهنده
 
@@ -48,7 +48,6 @@ pip install soropy
 
 </p>
 
----
 
 ## 🤝 مشارکت
 
@@ -58,7 +57,7 @@ pip install soropy
 - 🐛 گزارش باگ از طریق [Issues](https://github.com/yourusername/soropy/issues)
 - 🔀 ارسال Pull Request
 
----
+
 
 <p align="center">
   ساخته شده با ❤️ توسط <a href="https://t.me/mr_hjf">MrHjf</a>
