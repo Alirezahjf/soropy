@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "soropy"
-version = "1.0.0"
+version = "1.0.1"
 description = "کتابخانه حرفه‌ای سروش پلاس برای پایتون - Professional Soroush Plus Web Client Library"
 readme = "README.md"
 license = {text = "MIT"}
@@ -32,10 +32,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/soropy/soropy"
+Homepage = "https://github.com/Alirezahjf/soropy"
 Documentation = "https://soropy.readthedocs.io"
-Repository = "https://github.com/soropy/soropy"
-Issues = "https://github.com/soropy/soropy/issues"
+Repository = "https://github.com/Alirezahjf/soropy"
+Issues = "https://github.com/Alirezahjf/soropy/issues"
 
 [tool.setuptools.packages.find]
 include = ["soropy*"]
