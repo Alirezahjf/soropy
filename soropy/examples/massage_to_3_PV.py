@@ -20,7 +20,7 @@ try:
     # ─── مرحله ۲: گرفتن نام ۳ نفر ─────────────────────
     targets = []
     for i in range(1, 4):
-        name = input(f"👤 نام شخص {i}: ").strip()
+        name = input(f"👤 name personal {i}: ").strip()
         targets.append(name)
 
     # ─── مرحله ۳: ارسال پیام ──────────────────────────
