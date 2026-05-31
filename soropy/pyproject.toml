@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soropy"
+version = "1.0.0"
+description = "کتابخانه حرفه‌ای سروش پلاس برای پایتون - Professional Soroush Plus Web Client Library"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "SoroPy Team", email = "soropy@example.com"}
+]
+keywords = ["soroush", "splus", "messenger", "automation", "bot", "soroush-plus"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "selenium>=4.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/soropy/soropy"
+Documentation = "https://soropy.readthedocs.io"
+Repository = "https://github.com/soropy/soropy"
+Issues = "https://github.com/soropy/soropy/issues"
+
+[tool.setuptools.packages.find]
+include = ["soropy*"]
