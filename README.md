@@ -30,3 +30,36 @@
 
 ```bash
 pip install soropy
+
+
+
+
+
+
+---
+
+## 📬 ارتباط با توسعه‌دهنده
+
+<p align="center">
+
+[![Telegram](https://img.shields.io/badge/Telegram-@mr__hjf-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/mr_hjf)
+[![Rubika](https://img.shields.io/badge/Rubika-@mr____hjf-8E24AA?style=for-the-badge&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAA0SURBVDhPY/hPIWBgGHaaiYECMKoRN0A1Bv9HF8QLRjUiA1Q7R0fDBCgNRjXiBgz/AQDmXwb/vnToiQAAAABJRU5ErkJggg==)](https://rubika.ir/mr__hjf)
+[![Bale](https://img.shields.io/badge/Bale-@mrhjf-4CAF50?style=for-the-badge&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAA0SURBVDhPY/hPIWBgGHaaiYECMKoRN0A1Bv9HF8QLRjUiA1Q7R0fDBCgNRjXiBgz/AQDmXwb/vnToiQAAAABJRU5ErkJggg==)](https://ble.ir/mrhjf)
+
+</p>
+
+---
+
+## 🤝 مشارکت
+
+نظرات، پیشنهادات و مشارکت‌های شما استقبال می‌شود!
+
+- 💬 پیام مستقیم از طریق شبکه‌های بالا
+- 🐛 گزارش باگ از طریق [Issues](https://github.com/yourusername/soropy/issues)
+- 🔀 ارسال Pull Request
+
+---
+
+<p align="center">
+  ساخته شده با ❤️ توسط <a href="https://t.me/mr_hjf">MrHjf</a>
+</p>
