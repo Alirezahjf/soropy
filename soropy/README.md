@@ -3,8 +3,8 @@
 **حرفه‌ای‌ترین کتابخانه پایتون برای سروش پلاس**
 
 [![PyPI](https://img.shields.io/pypi/v/soropy)](https://pypi.org/project/soropy/)
+[![Downloads](https://img.shields.io/pypi/dm/soropy)](https://pypi.org/project/soropy/)
 [![Python](https://img.shields.io/pypi/pyversions/soropy)](https://pypi.org/project/soropy/)
-[![License](https://img.shields.io/pypi/l/soropy)](https://opensource.org/licenses/MIT)
 
 ---
 
