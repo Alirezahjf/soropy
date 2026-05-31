@@ -1,3 +1,4 @@
+```markdown
 # SoroPy 🚀
 
 **حرفه‌ای‌ترین کتابخانه پایتون برای سروش پلاس**
@@ -5,6 +6,7 @@
 [![PyPI](https://img.shields.io/pypi/v/soropy)](https://pypi.org/project/soropy/)
 [![Downloads](https://img.shields.io/pypi/dm/soropy)](https://pypi.org/project/soropy/)
 [![Python](https://img.shields.io/pypi/pyversions/soropy)](https://pypi.org/project/soropy/)
+[![License](https://img.shields.io/pypi/l/soropy)](https://opensource.org/licenses/MIT)
 
 ---
 
@@ -30,13 +32,158 @@
 
 ```bash
 pip install soropy
+```
 
+### پیش‌نیازها
+- Python 3.8+
+- Google Chrome / Chromium
+- ChromeDriver (مطابق نسخه Chrome)
 
+---
 
+## 🚀 شروع سریع
 
+### استفاده ساده
 
+```python
+from soropy import SoroushClient
 
+client = SoroushClient("09123456789")
+client.login()
 
+# ارسال پیام
+client.send_message("علی", "سلام!")
+
+# استخراج لیست چت
+chats = client.get_chats()
+print(f"تعداد چت: {chats.total_count}")
+
+client.close()
+```
+
+### Context Manager
+
+```python
+from soropy import SoroushClient
+
+with SoroushClient("09123456789", headless=True) as client:
+    client.login()
+    client.send_message("علی", "سلام!")
+```
+
+---
+
+## 🤖 پاسخ خودکار
+
+```python
+from soropy import SoroushClient
+
+client = SoroushClient("09123456789")
+client.login()
+
+# تعریف قوانین
+client.add_reply_rule("سلام", "علیک سلام! 👋")
+client.add_reply_rule("قیمت", "لطفاً به سایت مراجعه کنید")
+client.set_default_reply("پیامت دریافت شد ✅")
+
+# شروع مانیتور (Ctrl+C برای توقف)
+client.start_monitor(interval=30)
+
+client.close()
+```
+
+### جلوگیری از پاسخ تکراری
+SoroPy به‌صورت خودکار هش پیام‌های پاسخ‌داده‌شده را ذخیره می‌کند.
+حتی بعد از ریستارت برنامه، پیام‌های قبلی دوباره پاسخ نمی‌گیرند.
+
+---
+
+## 👥 چند اکانت همزمان
+
+```python
+from soropy import MultiAccountManager
+
+with MultiAccountManager(headless=True) as mgr:
+    mgr.add_account("09123456789")
+    mgr.add_account("09187654321")
+
+    mgr.login_all()
+
+    # ارسال از هر اکانت
+    mgr.get_client("09123456789").send_message("علی", "سلام از اکانت ۱")
+    mgr.get_client("09187654321").send_message("علی", "سلام از اکانت ۲")
+
+    # مانیتور همه
+    mgr.start_all_monitors(interval=30)
+```
+
+---
+
+## 📇 مخاطبین
+
+```python
+# لیست مخاطبین
+contacts = client.get_contacts()
+
+# اضافه کردن
+client.add_contact("09187654321", "محمد", "احمدی")
+
+# جستجو
+results = client.search_contacts("محمد")
+```
+
+---
+
+## 📢 کانال
+
+```python
+# ارسال پست (نیاز به ادمین بودن)
+client.send_to_channel("@my_channel", "پیام تست")
+```
+
+---
+
+## ⚙️ تنظیمات پیشرفته
+
+```python
+client = SoroushClient(
+    phone="09123456789",
+    headless=True,                     # بدون پنجره
+    session_dir="my_sessions",         # مسیر ذخیره سشن
+    tracker_path="my_tracker.json",    # فایل ردیاب پیام
+    log_file="soropy.log",             # فایل لاگ
+    chrome_binary="/usr/bin/chromium", # مسیر Chrome
+    chromedriver_path="/usr/bin/chromedriver",
+    extra_chrome_args=["--proxy-server=..."],
+)
+```
+
+---
+
+## 🏗️ معماری
+
+```
+SoroushClient (client.py)
+├── BrowserManager (browser.py)        → مدیریت Chrome
+├── Authenticator (auth.py)            → فرآیند لاگین
+├── ChatManager (chat.py)              → عملیات چت
+├── ContactManager (contacts.py)       → مدیریت مخاطبین
+├── ChannelManager (channel.py)        → عملیات کانال
+├── AutoReplyEngine (auto_reply.py)    → موتور پاسخ خودکار
+├── MessageTracker (message_tracker.py)→ جلوگیری از تکرار
+└── SessionManager (session.py)        → مدیریت سشن
+
+MultiAccountManager (multi.py)
+└── Dict[phone, SoroushClient]         → چند اکانت
+```
+
+---
+
+## 📄 License
+
+MIT License - آزاد برای استفاده شخصی و تجاری
+
+---
 
 ## 📬 ارتباط با توسعه‌دهنده
 
@@ -48,17 +195,23 @@ pip install soropy
 
 </p>
 
+---
 
 ## 🤝 مشارکت
 
 نظرات، پیشنهادات و مشارکت‌های شما استقبال می‌شود!
 
 - 💬 پیام مستقیم از طریق شبکه‌های بالا
-- 🐛 گزارش باگ از طریق [Issues](https://github.com/yourusername/soropy/issues)
-- 🔀 ارسال Pull Request
+- 🐛 گزارش باگ از طریق [Issues](https://github.com/Mrhjf/soropy/issues)
+- 🔀 ارسال Pull Request از طریق [GitHub](https://github.com/Mrhjf/soropy)
 
-
+---
 
 <p align="center">
   ساخته شده با ❤️ توسط <a href="https://t.me/mr_hjf">MrHjf</a>
+  <br/>
+  <a href="https://pypi.org/project/soropy/">PyPI</a> •
+  <a href="https://github.com/Mrhjf/soropy">GitHub</a> •
+  <a href="https://t.me/mr_hjf">تلگرام</a>
 </p>
+```
