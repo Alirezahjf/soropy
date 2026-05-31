@@ -8,7 +8,7 @@
 from soropy import SoroushClient
 
 # ─── مرحله ۱: شماره و لاگین ───────────────────────────
-raw_phone = input("📱 شماره تلفن (مثلاً 09123456789): ").strip()
+raw_phone = input("📱 phone number ( 09123456789): ").strip()
 
 client = SoroushClient(phone=raw_phone, headless=True)
 
