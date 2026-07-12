@@ -126,8 +126,8 @@ class BaseBackend(abc.ABC):
 
     # ── unread / history ───────────────────────────────
 
-    def get_unread_personal_chats(self) -> List[UnreadChat]:
-        """Chats that currently have unread messages."""
+    def get_unread_personal_chats(self, max_chats: int = 50) -> List[UnreadChat]:
+        """Chats that currently have unread messages (personal only preferred)."""
         return []
 
     def get_unread_messages(self, chat_name: str, count: int = 10) -> List[MessageInfo]:

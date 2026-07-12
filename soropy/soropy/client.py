@@ -10,13 +10,13 @@ from __future__ import annotations
 import json
 import threading
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 from soropy import constants as C
 from soropy.auto_reply import AutoReplyEngine
 from soropy.backends import create_backend
 from soropy.backends.base import BaseBackend, BackendCapability, BackendEvent
-from soropy.exceptions import SoroPyError
+from soropy.exceptions import LoginError, SoroPyError
 from soropy.message_tracker import MessageTracker
 from soropy.session import SessionManager
 from soropy.types import (
@@ -24,9 +24,31 @@ from soropy.types import (
     LoginStatus,
     SendResult,
 )
-from soropy.utils import get_logger, normalize_phone
+from soropy.utils import get_logger, normalize_phone, validate_phone
 
 logger = get_logger("soropy.client")
+
+# Soft-skip admin/permission errors during poll
+_SOFT_SKIP = (
+    "CHAT_ADMIN_REQUIRED",
+    "CHAT_WRITE_FORBIDDEN",
+    "CHAT_SEND",
+    "USER_BANNED_IN_CHANNEL",
+    "CHANNEL_PRIVATE",
+    "CHAT_RESTRICTED",
+    "RIGHT_FORBIDDEN",
+    "ADMIN PRIVILEGES",
+)
+
+# Recommended minimum poll interval for WebSocket safety-net
+WS_MIN_MONITOR_INTERVAL = 120
+# Max personal chats processed per poll cycle on WS
+WS_MAX_UNREAD_PER_CYCLE = 5
+
+
+def _is_soft_skip_error(err: str) -> bool:
+    upper = (err or "").upper()
+    return any(t in upper for t in _SOFT_SKIP)
 
 
 class SoroushClient:
@@ -38,17 +60,20 @@ class SoroushClient:
     phone : str
         Phone number in any Iranian format.
     backend : str
-        ``"selenium"`` (default) – Chrome DOM automation.
-        ``"websocket"`` / ``"ws"`` – direct protocol client (event-driven).
+        ``\"selenium\"`` (default) – Chrome DOM automation.
+        ``\"websocket\"`` / ``\"ws\"`` – direct protocol client (event-driven).
     headless : bool
         Selenium only: run Chrome without a visible window.
     session_dir : str
         Directory for persistent sessions
-        (Chrome profiles for selenium, credential JSON for websocket).
+        (Chrome profiles for selenium, SQLite for websocket).
     tracker_path : str or None
         Path to the message-tracker JSON file.
     log_file : str or None
         Optional log file path.
+    auto_reply_private_only : bool
+        When True (default), realtime + poll auto-reply only targets
+        private/personal chats – never groups or channels.
     chrome_binary / chromedriver_path / extra_chrome_args
         Selenium-only options.
     ws_url / origin
@@ -80,18 +105,30 @@ class SoroushClient:
         extra_chrome_args: Optional[list] = None,
         ws_url: Optional[str] = None,
         origin: Optional[str] = None,
+        auto_reply_private_only: bool = True,
         **backend_kwargs,
     ):
-        self._phone = normalize_phone(phone)
+        # Soft normalise for construction; hard validate at login()
+        self._phone_raw = str(phone or "").strip()
+        try:
+            self._phone = validate_phone(phone)
+            self._phone_invalid_hint = False
+        except ValueError:
+            # Keep original raw string so login() can re-validate with a clear error
+            # (do NOT strip placeholders like 0912xxxxxxx into a short +98912).
+            self._phone = self._phone_raw
+            self._phone_invalid_hint = True
+
         self._backend_name = (backend or "selenium").strip().lower()
         self._headless = headless
         self._log_file = log_file
+        self.auto_reply_private_only = auto_reply_private_only
+        self.auto_reply_enabled = True
 
         if log_file:
             from soropy.utils import get_logger as _gl
             _gl(f"soropy.{self._phone}", log_file)
 
-        # Default session dir depends on backend
         if session_dir is None:
             if self._backend_name in ("websocket", "ws", "splus", "protocol"):
                 session_dir = C.DEFAULT_WS_SESSIONS_DIR
@@ -99,7 +136,6 @@ class SoroushClient:
                 session_dir = C.DEFAULT_SESSIONS_DIR
         self._session_dir = session_dir
 
-        # Selenium still uses SessionManager for profile paths / delete_session
         self._session_mgr = SessionManager(session_dir)
 
         if tracker_path is None:
@@ -198,16 +234,52 @@ class SoroushClient:
         """
         Realtime auto-reply hook for WebSocket backend.
 
-        Only replies when the auto-reply engine has been configured
-        (rules or default_reply) and the message is inbound.
+        * Only private chats by default (``auto_reply_private_only``).
+        * Sends via async schedule so the event loop is never blocked.
+        * Soft-skips CHAT_ADMIN_REQUIRED etc.
         """
-        if self._auto_reply is None:
+        if not self.auto_reply_enabled:
+            return
+        if self._auto_reply is None or not self._auto_reply.has_rules():
             return
         data = event.data or {}
         if data.get("is_outgoing"):
             return
+
+        is_private = data.get("is_private")
+        is_group = data.get("is_group")
+        is_channel = data.get("is_channel")
+
+        if self.auto_reply_private_only:
+            # Prefer explicit flag; if missing, refuse group/channel
+            if is_private is False or is_group or is_channel:
+                return
+            if is_private is not True:
+                # Unknown kind – check backend cache
+                chat_name_probe = (
+                    data.get("chat_name")
+                    or data.get("sender_name")
+                    or data.get("chat_id")
+                    or ""
+                )
+                kind = None
+                if hasattr(self._backend, "chat_kind"):
+                    try:
+                        kind = self._backend.chat_kind(chat_name_probe)  # type: ignore
+                    except Exception:
+                        kind = None
+                if kind and kind != "personal":
+                    return
+                if kind is None and (is_group or is_channel):
+                    return
+
         text = (data.get("text") or "").strip()
-        chat_name = data.get("chat_name") or data.get("sender_name") or data.get("chat_id") or ""
+        chat_name = (
+            data.get("chat_name")
+            or data.get("sender_name")
+            or data.get("chat_id")
+            or ""
+        )
         if not text or not chat_name:
             return
 
@@ -216,10 +288,41 @@ class SoroushClient:
             return
 
         msg_id = data.get("message_id") or ""
-        result = self._backend.reply_to_message(chat_name, msg_id, reply)
-        if result.success:
-            self._auto_reply.mark_replied(chat_name, text)
-            logger.info("Realtime auto-reply → %s: %s", chat_name, reply[:40])
+
+        # Prefer non-blocking schedule on WS backend
+        if hasattr(self._backend, "schedule_reply"):
+            def _done(ok: bool, err: str) -> None:
+                if ok:
+                    self._auto_reply.mark_replied(chat_name, text)
+                    logger.info("Realtime auto-reply → %s: %s", chat_name, reply[:40])
+                elif err and _is_soft_skip_error(err):
+                    logger.debug("Realtime auto-reply soft-skip %s: %s", chat_name, err)
+                elif err:
+                    logger.warning("Realtime auto-reply failed %s: %s", chat_name, err)
+
+            try:
+                self._backend.schedule_reply(  # type: ignore[attr-defined]
+                    chat_name, str(msg_id), reply, on_done=_done
+                )
+                return
+            except Exception as exc:
+                logger.debug("schedule_reply fallback: %s", exc)
+
+        # Sync fallback (selenium or schedule unavailable)
+        try:
+            result = self._backend.reply_to_message(chat_name, str(msg_id), reply)
+            if result.success:
+                self._auto_reply.mark_replied(chat_name, text)
+                logger.info("Realtime auto-reply → %s: %s", chat_name, reply[:40])
+            elif result.error and _is_soft_skip_error(result.error):
+                logger.debug(
+                    "Realtime auto-reply soft-skip %s: %s", chat_name, result.error
+                )
+        except Exception as exc:
+            if _is_soft_skip_error(str(exc)):
+                logger.debug("Realtime auto-reply soft-skip %s: %s", chat_name, exc)
+            else:
+                logger.warning("Realtime auto-reply error %s: %s", chat_name, exc)
 
     # ════════════════════════════════════════════════════
     #  Lifecycle
@@ -232,16 +335,14 @@ class SoroushClient:
         """
         Authenticate and open a ready session.
 
-        Parameters
-        ----------
-        code_callback : callable, optional
-            Function that returns the SMS verification code.
-            Default: ``input()`` prompt.
-
-        Returns
-        -------
-        LoginStatus
+        Validates the phone number before contacting the server.
         """
+        try:
+            self._phone = validate_phone(self._phone_raw or self._phone)
+            self._phone_invalid_hint = False
+        except ValueError as exc:
+            raise LoginError(str(exc)) from exc
+
         if self._auto_reply is None:
             self._auto_reply = AutoReplyEngine(tracker=self._tracker)
 
@@ -257,7 +358,10 @@ class SoroushClient:
     def close(self) -> None:
         """Stop the transport and clean up."""
         self._monitor_stop.set()
-        self._backend.close()
+        try:
+            self._backend.close()
+        except Exception as exc:
+            logger.debug("backend close: %s", exc)
         self._is_logged_in = False
         logger.info("Client closed for %s (%s)", self._phone, self._backend.name)
 
@@ -275,19 +379,16 @@ class SoroushClient:
         if not self._is_logged_in:
             raise SoroPyError("Not logged in. Call login() first.")
 
+    def _require_ws(self, method: str) -> None:
+        if self._backend.name != "websocket":
+            raise SoroPyError(
+                f"{method}() requires backend='websocket'. "
+                f"Current backend is '{self._backend.name}'. "
+                "Create the client with SoroushClient(phone, backend='websocket')."
+            )
+
     def get_chats(self, save_to: Optional[str] = None) -> ChatCollection:
-        """
-        Extract all chats.
-
-        Parameters
-        ----------
-        save_to : str, optional
-            JSON file path to persist results.
-
-        Returns
-        -------
-        ChatCollection
-        """
+        """Extract all chats."""
         self._ensure_ready()
         collection = self._backend.get_chats()
         self._chats_cache = collection
@@ -300,9 +401,19 @@ class SoroushClient:
         return collection
 
     def send_message(self, chat_name: str, message: str) -> SendResult:
-        """Send a single message to a specific chat."""
+        """Send a single message to a specific chat (personal / group / channel)."""
         self._ensure_ready()
         return self._backend.send_message(chat_name, message)
+
+    def reply(
+        self,
+        chat_name: str,
+        message_id: Union[str, int],
+        text: str,
+    ) -> SendResult:
+        """Reply to a specific message by id."""
+        self._ensure_ready()
+        return self._backend.reply_to_message(chat_name, str(message_id), text)
 
     def send_bulk_messages(
         self,
@@ -310,7 +421,7 @@ class SoroushClient:
         message: str,
         delay: float = 3.0,
     ) -> List[SendResult]:
-        """Send *message* to multiple personal chats."""
+        """Send *message* to multiple chats."""
         self._ensure_ready()
         return self._backend.send_bulk_messages(chat_names, message, delay)
 
@@ -325,6 +436,13 @@ class SoroushClient:
         targets = (self._chats_cache.personal or [])[:max_count]
         return self.send_bulk_messages(targets, message)
 
+    def send_to_group(self, group: str, message: str) -> SendResult:
+        """Send text to a group / supergroup."""
+        self._ensure_ready()
+        if hasattr(self._backend, "send_to_group"):
+            return self._backend.send_to_group(group, message)  # type: ignore
+        return self._backend.send_message(group, message)
+
     # ════════════════════════════════════════════════════
     #  Channel operations
     # ════════════════════════════════════════════════════
@@ -335,7 +453,103 @@ class SoroushClient:
         return self._backend.send_to_channel(channel_url, message)
 
     # ════════════════════════════════════════════════════
-    #  Contact operations
+    #  Media / message tools
+    # ════════════════════════════════════════════════════
+
+    def send_file(
+        self,
+        chat: str,
+        path: str,
+        caption: str = "",
+        force_document: bool = False,
+        reply_to: Union[str, int, None] = None,
+    ) -> SendResult:
+        """Send a file / photo to *chat* (WebSocket backend)."""
+        self._ensure_ready()
+        if hasattr(self._backend, "send_file"):
+            return self._backend.send_file(  # type: ignore[attr-defined]
+                chat,
+                path,
+                caption=caption,
+                force_document=force_document,
+                reply_to=reply_to,
+            )
+        raise SoroPyError(
+            "send_file() is only available on backend='websocket'. "
+            "Install soropy[ws] and use SoroushClient(..., backend='websocket')."
+        )
+
+    def download_media(
+        self,
+        chat: str,
+        message_id: Union[str, int],
+        file_path: Optional[str] = None,
+    ) -> Optional[str]:
+        """Download media from a message; returns local file path."""
+        self._ensure_ready()
+        if hasattr(self._backend, "download_media"):
+            return self._backend.download_media(  # type: ignore[attr-defined]
+                chat, message_id, file_path
+            )
+        raise SoroPyError("download_media() requires backend='websocket'.")
+
+    def delete_messages(
+        self,
+        chat: str,
+        message_ids: Sequence[Union[str, int]],
+        revoke: bool = True,
+    ) -> bool:
+        """Delete one or more messages."""
+        self._ensure_ready()
+        if hasattr(self._backend, "delete_messages"):
+            return self._backend.delete_messages(  # type: ignore[attr-defined]
+                chat, message_ids, revoke=revoke
+            )
+        raise SoroPyError("delete_messages() requires backend='websocket'.")
+
+    def edit_message(
+        self,
+        chat: str,
+        message_id: Union[str, int],
+        text: str,
+    ) -> bool:
+        """Edit a previously sent message."""
+        self._ensure_ready()
+        if hasattr(self._backend, "edit_message"):
+            return self._backend.edit_message(  # type: ignore[attr-defined]
+                chat, message_id, text
+            )
+        raise SoroPyError("edit_message() requires backend='websocket'.")
+
+    def pin_message(
+        self,
+        chat: str,
+        message_id: Union[str, int],
+        notify: bool = False,
+    ) -> bool:
+        """Pin a message in a chat."""
+        self._ensure_ready()
+        if hasattr(self._backend, "pin_message"):
+            return self._backend.pin_message(  # type: ignore[attr-defined]
+                chat, message_id, notify=notify
+            )
+        raise SoroPyError("pin_message() requires backend='websocket'.")
+
+    def unpin_message(
+        self,
+        chat: str,
+        message_id: Optional[Union[str, int]] = None,
+    ) -> bool:
+        """Unpin a message (or all, if message_id is None)."""
+        self._ensure_ready()
+        if hasattr(self._backend, "unpin_message"):
+            return self._backend.unpin_message(  # type: ignore[attr-defined]
+                chat, message_id
+            )
+        raise SoroPyError("unpin_message() requires backend='websocket'.")
+
+    # ════════════════════════════════════════════════════
+    #  Contact / user operations
     # ════════════════════════════════════════════════════
 
     def get_contacts(self) -> List[str]:
@@ -358,6 +572,104 @@ class SoroushClient:
         self._ensure_ready()
         return self._backend.search_contacts(query)
 
+    def block_user(self, user: str) -> bool:
+        """Block a user."""
+        self._ensure_ready()
+        if hasattr(self._backend, "block_user"):
+            return self._backend.block_user(user)  # type: ignore[attr-defined]
+        raise SoroPyError("block_user() requires backend='websocket'.")
+
+    def unblock_user(self, user: str) -> bool:
+        """Unblock a user."""
+        self._ensure_ready()
+        if hasattr(self._backend, "unblock_user"):
+            return self._backend.unblock_user(user)  # type: ignore[attr-defined]
+        raise SoroPyError("unblock_user() requires backend='websocket'.")
+
+    def report(
+        self,
+        entity: str,
+        reason: str = "spam",
+        message: str = "",
+    ) -> bool:
+        """
+        Report a peer.
+
+        reason: spam | violence | porn | copyright | other | fake | child | geo
+        """
+        self._ensure_ready()
+        if hasattr(self._backend, "report"):
+            return self._backend.report(  # type: ignore[attr-defined]
+                entity, reason=reason, message=message
+            )
+        raise SoroPyError("report() requires backend='websocket'.")
+
+    # ════════════════════════════════════════════════════
+    #  Moderation (group / channel – admin required)
+    # ════════════════════════════════════════════════════
+
+    def kick(self, chat: str, user: str) -> bool:
+        """Kick a user from a group/channel (admin)."""
+        self._ensure_ready()
+        if hasattr(self._backend, "kick"):
+            return self._backend.kick(chat, user)  # type: ignore[attr-defined]
+        raise SoroPyError("kick() requires backend='websocket'.")
+
+    def ban(self, chat: str, user: str, **kwargs) -> bool:
+        """Ban a user in a group/channel (admin)."""
+        self._ensure_ready()
+        if hasattr(self._backend, "ban"):
+            return self._backend.ban(chat, user, **kwargs)  # type: ignore[attr-defined]
+        raise SoroPyError("ban() requires backend='websocket'.")
+
+    def unban(self, chat: str, user: str) -> bool:
+        """Unban a user (admin)."""
+        self._ensure_ready()
+        if hasattr(self._backend, "unban"):
+            return self._backend.unban(chat, user)  # type: ignore[attr-defined]
+        raise SoroPyError("unban() requires backend='websocket'.")
+
+    def set_permissions(
+        self,
+        chat: str,
+        user: Optional[str] = None,
+        **rights,
+    ) -> bool:
+        """Set restricted permissions on a user or default chat rights."""
+        self._ensure_ready()
+        if hasattr(self._backend, "set_permissions"):
+            return self._backend.set_permissions(  # type: ignore[attr-defined]
+                chat, user=user, **rights
+            )
+        raise SoroPyError("set_permissions() requires backend='websocket'.")
+
+    def promote(self, chat: str, user: str, **admin_rights) -> bool:
+        """Promote a user to admin (admin rights required)."""
+        self._ensure_ready()
+        if hasattr(self._backend, "promote"):
+            return self._backend.promote(  # type: ignore[attr-defined]
+                chat, user, **admin_rights
+            )
+        raise SoroPyError("promote() requires backend='websocket'.")
+
+    def get_participants(self, chat: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """List participants of a group/channel."""
+        self._ensure_ready()
+        if hasattr(self._backend, "get_participants"):
+            return self._backend.get_participants(chat, limit=limit)  # type: ignore
+        raise SoroPyError("get_participants() requires backend='websocket'.")
+
+    def get_permissions(
+        self,
+        chat: str,
+        user: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get permissions for self or a specific user in *chat*."""
+        self._ensure_ready()
+        if hasattr(self._backend, "get_permissions"):
+            return self._backend.get_permissions(chat, user=user)  # type: ignore
+        raise SoroPyError("get_permissions() requires backend='websocket'.")
+
     # ════════════════════════════════════════════════════
     #  Saved Messages
     # ════════════════════════════════════════════════════
@@ -367,70 +679,134 @@ class SoroushClient:
         self._ensure_ready()
         return self._backend.go_to_saved_messages()
 
+    def get_me(self) -> Optional[Dict[str, Any]]:
+        """Return basic info about the logged-in account (WS)."""
+        self._ensure_ready()
+        if hasattr(self._backend, "get_me"):
+            return self._backend.get_me()  # type: ignore[attr-defined]
+        return {"phone": self._phone, "backend": self._backend.name}
+
     # ════════════════════════════════════════════════════
     #  Auto-reply (single pass – polling style)
     # ════════════════════════════════════════════════════
 
     def check_and_reply(self) -> Dict[str, List[SendResult]]:
         """
-        Check personal chats for unread messages and auto-reply
-        using the configured rules.  Skips messages already replied to.
+        Check **personal** chats for unread messages and auto-reply.
 
-        Works on both backends:
-        * Selenium – scrapes unread badges from the DOM.
-        * WebSocket – uses in-memory unread counters + history RPC.
+        Groups and channels are never targeted when
+        ``auto_reply_private_only`` is True (default).
 
-        Returns
-        -------
-        dict  chat_name → list of SendResult
+        Admin / write-forbidden errors are soft-skipped (debug log only).
         """
         self._ensure_ready()
+        if not self.auto_reply_enabled:
+            return {}
+
         engine = self.auto_reply_engine
+        if not engine.has_rules():
+            logger.debug("No auto-reply rules/default configured; skip poll")
+            return {}
+
         results: Dict[str, List[SendResult]] = {}
 
-        unread = self._backend.get_unread_personal_chats()
+        # Cap unread chats on WS to avoid thrashing 80+ dialogs
+        max_chats = (
+            WS_MAX_UNREAD_PER_CYCLE
+            if self._backend.name == "websocket"
+            else 50
+        )
+        if hasattr(self._backend, "get_unread_personal_chats"):
+            try:
+                unread = self._backend.get_unread_personal_chats(  # type: ignore
+                    max_chats=max_chats
+                )
+            except TypeError:
+                unread = self._backend.get_unread_personal_chats()
+                unread = unread[:max_chats]
+        else:
+            unread = self._backend.get_unread_personal_chats()
+            unread = unread[:max_chats]
+
         if not unread:
-            logger.info("No unread messages")
+            logger.info("No unread personal messages")
             return results
 
-        logger.info("%d chats with unread messages", len(unread))
+        logger.info("%d personal chats with unread (cap=%d)", len(unread), max_chats)
 
         for uc in unread:
+            # Double-check kind if backend exposes it
+            if self.auto_reply_private_only and hasattr(self._backend, "chat_kind"):
+                kind = self._backend.chat_kind(uc.name)  # type: ignore
+                if kind and kind != "personal":
+                    logger.debug("Skip non-personal in poll: %s (%s)", uc.name, kind)
+                    continue
+
             chat_results: List[SendResult] = []
-            messages = self._backend.get_unread_messages(uc.name, uc.count)
+            try:
+                messages = self._backend.get_unread_messages(uc.name, uc.count)
+            except Exception as exc:
+                if _is_soft_skip_error(str(exc)):
+                    logger.debug("get_unread soft-skip %s: %s", uc.name, exc)
+                else:
+                    logger.warning("get_unread failed %s: %s", uc.name, exc)
+                continue
 
             if not messages:
                 reply = engine.get_reply("", uc.name, 1)
                 if reply:
-                    # Prefer plain send; Selenium may already be inside the chat
-                    if self._backend.name == "selenium" and hasattr(self._backend, "chat"):
-                        ok = self._backend.chat.type_and_send(reply)  # type: ignore[attr-defined]
-                        sr = SendResult(ok, uc.name, reply, "" if ok else "Send failed")
-                    else:
-                        sr = self._backend.send_message(uc.name, reply)
-                    if sr.success:
-                        engine.mark_replied(uc.name, "")
-                    chat_results.append(sr)
+                    try:
+                        if self._backend.name == "selenium" and hasattr(
+                            self._backend, "chat"
+                        ):
+                            ok = self._backend.chat.type_and_send(reply)  # type: ignore
+                            sr = SendResult(
+                                ok, uc.name, reply, "" if ok else "Send failed"
+                            )
+                        else:
+                            sr = self._backend.send_message(uc.name, reply)
+                        if sr.success:
+                            engine.mark_replied(uc.name, "")
+                        elif sr.error and _is_soft_skip_error(sr.error):
+                            logger.debug(
+                                "poll send soft-skip %s: %s", uc.name, sr.error
+                            )
+                        chat_results.append(sr)
+                    except Exception as exc:
+                        if _is_soft_skip_error(str(exc)):
+                            logger.debug("poll soft-skip %s: %s", uc.name, exc)
+                        else:
+                            logger.warning("poll send error %s: %s", uc.name, exc)
             else:
                 for idx, msg in enumerate(messages, 1):
                     reply = engine.get_reply(msg.text, uc.name, idx)
                     if reply is None:
                         logger.debug(
-                            "Skipping duplicate in '%s': %s",
+                            "Skipping (no rule/duplicate) in '%s': %s",
                             uc.name,
-                            msg.text[:30],
+                            (msg.text or "")[:30],
                         )
                         continue
 
-                    sr = self._backend.reply_to_message(
-                        uc.name,
-                        msg.message_id,
-                        reply,
-                        element_index=msg.element_index,
-                    )
-                    if sr.success:
-                        engine.mark_replied(uc.name, msg.text)
-                    chat_results.append(sr)
+                    try:
+                        sr = self._backend.reply_to_message(
+                            uc.name,
+                            msg.message_id,
+                            reply,
+                            element_index=msg.element_index,
+                        )
+                        if sr.success:
+                            engine.mark_replied(uc.name, msg.text)
+                        elif sr.error and _is_soft_skip_error(sr.error):
+                            logger.debug(
+                                "poll reply soft-skip %s: %s", uc.name, sr.error
+                            )
+                        chat_results.append(sr)
+                    except Exception as exc:
+                        if _is_soft_skip_error(str(exc)):
+                            logger.debug("poll soft-skip %s: %s", uc.name, exc)
+                        else:
+                            logger.warning("poll reply error %s: %s", uc.name, exc)
                     time.sleep(0.5 if self._backend.name == "websocket" else 2)
 
             results[uc.name] = chat_results
@@ -438,10 +814,9 @@ class SoroushClient:
             # Selenium: return to personal chat list for the next unread
             if self._backend.name == "selenium" and hasattr(self._backend, "chat"):
                 try:
-                    from soropy import constants as _C
                     self._backend.chat.go_back()  # type: ignore[attr-defined]
                     time.sleep(1)
-                    self._backend.chat.click_chat_tab(_C.TAB_PERSONAL)  # type: ignore[attr-defined]
+                    self._backend.chat.click_chat_tab(C.TAB_PERSONAL)  # type: ignore
                     time.sleep(1)
                 except Exception:
                     pass
@@ -459,45 +834,32 @@ class SoroushClient:
         on_reply: Optional[Callable[[str, str, str], None]] = None,
     ) -> Optional[threading.Thread]:
         """
-        Continuously monitor and auto-reply.
+        Continuously monitor and auto-reply (**personal chats only**).
 
-        * Selenium backend: polls every *interval* seconds.
-        * WebSocket backend: realtime ``new_message`` handler already
-          auto-replies when rules are set; this monitor still runs a
-          lightweight safety-net poll (default interval can be higher).
-
-        Parameters
-        ----------
-        interval : int
-            Seconds between each scan.
-        blocking : bool
-            If True, blocks the calling thread (press Ctrl+C to stop).
-            If False, runs in a background thread and returns it.
-        on_reply : callable(chat_name, original_msg, reply_msg)
-            Optional callback invoked after each successful reply.
-
-        Returns
-        -------
-        threading.Thread or None
+        * Selenium: polls every *interval* seconds.
+        * WebSocket: realtime ``new_message`` already auto-replies when
+          rules are set; this monitor is only a safety-net poll.
+          Interval is raised to at least ``WS_MIN_MONITOR_INTERVAL`` (120s)
+          to avoid thrashing dialogs.
         """
         self._monitor_stop.clear()
 
-        # For WS, realtime path is preferred – still keep poll as fallback
-        if (
-            self._backend.supports(BackendCapability.REALTIME_EVENTS)
-            and interval < 5
-        ):
-            logger.info(
-                "WebSocket backend active: realtime auto-reply is on; "
-                "poll interval=%ss is a safety net only",
-                interval,
-            )
+        effective = int(interval)
+        if self._backend.supports(BackendCapability.REALTIME_EVENTS):
+            if effective < WS_MIN_MONITOR_INTERVAL:
+                logger.info(
+                    "WebSocket backend: raising poll interval %ss → %ss "
+                    "(realtime auto-reply is primary; poll is safety-net only)",
+                    effective,
+                    WS_MIN_MONITOR_INTERVAL,
+                )
+                effective = WS_MIN_MONITOR_INTERVAL
 
         def _loop():
             cycle = 0
             while not self._monitor_stop.is_set():
                 cycle += 1
-                logger.info("Monitor cycle %d", cycle)
+                logger.info("Monitor cycle %d (interval=%ss)", cycle, effective)
                 try:
                     results = self.check_and_reply()
                     if on_reply:
@@ -506,9 +868,12 @@ class SoroushClient:
                                 if sr.success:
                                     on_reply(chat_name, "", sr.message)
                 except Exception as e:
-                    logger.error("Monitor error: %s", e)
+                    if _is_soft_skip_error(str(e)):
+                        logger.debug("Monitor soft-skip: %s", e)
+                    else:
+                        logger.error("Monitor error: %s", e)
 
-                self._monitor_stop.wait(timeout=interval)
+                self._monitor_stop.wait(timeout=effective)
 
             logger.info("Monitor stopped")
 
@@ -547,13 +912,22 @@ class SoroushClient:
         """Shortcut to remove a rule."""
         return self.auto_reply_engine.remove_rule(keyword)
 
-    def set_default_reply(self, reply: str) -> None:
-        """Set the default reply message."""
+    def set_default_reply(self, reply: Optional[str]) -> None:
+        """Set the default reply message (or None to disable)."""
         self.auto_reply_engine.default_reply = reply
 
     def load_reply_rules(self, rules: Dict[str, str]) -> None:
         """Bulk-load reply rules from a dict."""
         self.auto_reply_engine.load_rules_from_dict(rules)
+
+    def set_auto_reply_enabled(self, enabled: bool) -> None:
+        """Enable/disable auto-reply globally (realtime + poll)."""
+        self.auto_reply_enabled = bool(enabled)
+        self.auto_reply_engine.enabled = bool(enabled)
+
+    def set_private_only(self, private_only: bool) -> None:
+        """If True, auto-reply only targets personal chats."""
+        self.auto_reply_private_only = bool(private_only)
 
     # ════════════════════════════════════════════════════
     #  Session helpers
@@ -561,7 +935,6 @@ class SoroushClient:
 
     def delete_session(self) -> bool:
         """Delete the stored session for this phone number."""
-        # Prefer backend-specific storage
         if hasattr(self._backend, "delete_session"):
             try:
                 return bool(self._backend.delete_session())  # type: ignore[attr-defined]
@@ -571,6 +944,8 @@ class SoroushClient:
 
     @property
     def has_session(self) -> bool:
-        if self._backend.name == "websocket" and hasattr(self._backend, "session_store"):
-            return self._backend.session_store.exists(self._phone)  # type: ignore[attr-defined]
+        if self._backend.name == "websocket" and hasattr(
+            self._backend, "session_store"
+        ):
+            return self._backend.session_store.exists(self._phone)  # type: ignore
         return self._session_mgr.exists(self._phone)

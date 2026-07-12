@@ -57,6 +57,9 @@ class IncomingMessage:
     sender_id: str = ""
     sender_name: str = ""
     is_outgoing: bool = False
+    is_private: bool = False
+    is_group: bool = False
+    is_channel: bool = False
     timestamp: float = 0.0
     reply_to_id: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -70,6 +73,9 @@ class IncomingMessage:
             "sender_id": self.sender_id,
             "sender_name": self.sender_name,
             "is_outgoing": self.is_outgoing,
+            "is_private": self.is_private,
+            "is_group": self.is_group,
+            "is_channel": self.is_channel,
             "timestamp": self.timestamp,
             "reply_to_id": self.reply_to_id,
         }

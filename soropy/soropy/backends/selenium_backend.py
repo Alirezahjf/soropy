@@ -178,12 +178,13 @@ class SeleniumBackend(BaseBackend):
     ) -> List[SendResult]:
         return self.chat.send_to_personal_chats(chat_names, message, delay)
 
-    def get_unread_personal_chats(self) -> List[UnreadChat]:
+    def get_unread_personal_chats(self, max_chats: int = 50) -> List[UnreadChat]:
         self.chat.click_bottom_tab(C.TAB_CHAT)
         time.sleep(2)
         self.chat.click_chat_tab(C.TAB_PERSONAL)
         time.sleep(2)
-        return self.chat.get_unread_personal_chats()
+        unread = self.chat.get_unread_personal_chats()
+        return unread[:max_chats] if max_chats else unread
 
     def get_unread_messages(self, chat_name: str, count: int = 10) -> List[MessageInfo]:
         if not self.chat.click_on_chat(chat_name):

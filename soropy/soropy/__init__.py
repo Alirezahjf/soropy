@@ -39,7 +39,7 @@ Multi-Account::
     >>> manager.login_all()
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __author__ = "SoroPy Team"
 __license__ = "MIT"
 

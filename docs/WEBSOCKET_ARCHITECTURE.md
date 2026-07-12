@@ -119,18 +119,30 @@ Realtime auto-reply: if rules are configured, `SoroushClient` replies on
 
 ---
 
-## 7. Capability matrix
+## 7. Capability matrix (v1.3.0)
 
 | Method | Selenium | WebSocket/MTProto |
 |--|:--:|:--:|
 | `login` | ✅ UI | ✅ SMS / session |
-| `send_message` | ✅ | ✅ |
-| `get_chats` | ✅ | ✅ dialogs |
+| `send_message` / `reply` | ✅ | ✅ |
+| `send_file` / `download_media` | ❌ | ✅ |
+| `edit` / `delete` / `pin` | ❌ | ✅ |
+| `get_chats` (personal/group/channel) | ✅ | ✅ dialogs |
 | `get_contacts` / `add_contact` | ✅ | ✅ |
-| `send_to_channel` | ✅ | ✅ |
-| `check_and_reply` / `start_monitor` | ✅ poll | ✅ poll + **push** |
-| `on("new_message")` | ❌ | ✅ |
+| `block_user` / `report` | ❌ | ✅ |
+| `kick` / `ban` / `promote` / … | ❌ | ✅ |
+| `send_to_channel` / `send_to_group` | ✅ | ✅ |
+| `check_and_reply` / `start_monitor` | ✅ poll PV | ✅ push + poll PV only |
+| `on("new_message")` | ❌ | ✅ (+ is_private flags) |
 | no Chrome required | ❌ | ✅ |
+
+### Auto-reply safety (1.3.0)
+
+* Only **private** chats by default (`auto_reply_private_only=True`).
+* Broadcast channels are never classified as personal.
+* Realtime replies use `LoopRunner.create_task` (no `run()` from the loop thread).
+* Poll cap: max 5 personal chats/cycle; WS interval floor ≈ 120s.
+* `CHAT_ADMIN_REQUIRED` soft-skipped (debug log).
 
 ---
 
