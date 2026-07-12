@@ -6,15 +6,18 @@ A comprehensive, production-grade Python library for automating
 Soroush Plus (splus.ir) web messenger.
 
 Features:
+    - Dual backends: Selenium (UI) and WebSocket (protocol)
     - Multi-account simultaneous sessions
     - Headless browser support
     - Auto-reply with rule engine and duplicate prevention
+    - Realtime events on WebSocket backend
     - Chat extraction, messaging, channel posting
     - Contact management
     - Persistent session management
     - Thread-safe design
 
-Basic Usage:
+Basic Usage (Selenium – default)::
+
     >>> from soropy import SoroushClient
     >>> client = SoroushClient("+989123456789")
     >>> client.login()
@@ -22,15 +25,21 @@ Basic Usage:
     >>> client.send_message("علی", "سلام!")
     >>> client.close()
 
-Multi-Account:
+WebSocket backend (event-driven)::
+
+    >>> client = SoroushClient("0912...", backend="websocket")
+    >>> client.on("new_message", lambda e: print(e.data))
+    >>> client.login()
+
+Multi-Account::
+
     >>> from soropy import MultiAccountManager
-    >>> manager = MultiAccountManager()
+    >>> manager = MultiAccountManager(backend="selenium")
     >>> manager.add_account("+989123456789")
-    >>> manager.add_account("+989187654321")
     >>> manager.login_all()
 """
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 __author__ = "SoroPy Team"
 __license__ = "MIT"
 
@@ -54,12 +63,19 @@ from soropy.exceptions import (
     ChannelError,
     BrowserError,
     TimeoutError as SoroPyTimeoutError,
+    TransportError,
+    ProtocolError,
+    ProtocolNotReadyError,
 )
 from soropy.session import SessionManager
 from soropy.message_tracker import MessageTracker
 
 # Multi-account manager
 from soropy.multi import MultiAccountManager
+
+# Backend plumbing (advanced)
+from soropy.backends import create_backend, BaseBackend, BackendCapability
+from soropy.backends.base import BackendEvent
 
 __all__ = [
     "SoroushClient",
@@ -83,4 +99,11 @@ __all__ = [
     "ChannelError",
     "BrowserError",
     "SoroPyTimeoutError",
+    "TransportError",
+    "ProtocolError",
+    "ProtocolNotReadyError",
+    "create_backend",
+    "BaseBackend",
+    "BackendCapability",
+    "BackendEvent",
 ]

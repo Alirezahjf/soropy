@@ -8,6 +8,29 @@ Soroush Plus web app changes its markup.
 # ─── URLs ───────────────────────────────────────────────
 SPLUS_WEB_URL = "https://web.splus.ir/"
 
+# ─── WebSocket / MTProto backend ────────────────────────
+# Real production endpoint (Soroush Plus web client):
+#   wss://im-server.splus.ir:443/apiws
+#   Origin: https://web.splus.ir
+#   Transport: obfuscated MTProto abridged (via SPlusthon)
+WS_URL = "wss://im-server.splus.ir:443/apiws"
+WS_HOST = "im-server.splus.ir"
+WS_PORT = 443
+WS_PATH = "/apiws"
+WS_ORIGIN = "https://web.splus.ir"
+WS_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+# Official web-client API credentials (public, same as SPlusthon)
+WS_API_ID = 1030400
+WS_API_HASH = "6edb16cf88714a4e9a805e928c39c937"
+WS_APP_VERSION = "3.9.2 A"
+WS_AUTH_TIMEOUT = 120
+WS_RPC_TIMEOUT = 30
+WS_PING_INTERVAL = 25.0
+DEFAULT_WS_SESSIONS_DIR = "soropy_ws_sessions"
+
 # ─── Timeouts (seconds) ────────────────────────────────
 DEFAULT_TIMEOUT = 15
 PAGE_LOAD_TIMEOUT = 10

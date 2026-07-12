@@ -25,6 +25,8 @@
 | 🖥️ **بدون پنجره** | حالت headless - بدون نمایش مرورگر |
 | 🧵 **Thread-safe** | طراحی ایمن برای چند نخی |
 | 💾 **ذخیره سشن** | بدون نیاز به لاگین مجدد |
+| 🔌 **دو Backend** | Selenium (UI) و WebSocket (پروتکل) |
+| ⚡ **رویداد لحظه‌ای** | `on("new_message")` روی backend وب‌سوکت |
 
 ---
 
@@ -160,21 +162,49 @@ client = SoroushClient(
 
 ---
 
+## 🔌 Backend وب‌سوکت / MTProto (بدون Chrome)
+
+از نسخهٔ ۱.۱ می‌توانید به‌جای Selenium مستقیماً به سرور سروش وصل شوید.
+پروتکل واقعی: **MTProto روی** `wss://im-server.splus.ir/apiws`.
+
+```bash
+pip install soropy[ws]   # splusthon + aiohttp
+```
+
+```python
+from soropy import SoroushClient
+
+client = SoroushClient("09123456789", backend="websocket")
+
+def on_msg(event):
+    print(event.data["chat_name"], event.data["text"])
+
+client.on("new_message", on_msg)
+client.login()                       # SMS بار اول، بعد سشن SQLite
+chats = client.get_chats()
+client.send_message("علی", "سلام از MTProto!")
+client.add_reply_rule("سلام", "علیک سلام 👋")
+client.start_monitor(interval=60)    # push لحظه‌ای + poll ایمنی
+```
+
+مستندات کامل: [`docs/WEBSOCKET_ARCHITECTURE.md`](docs/WEBSOCKET_ARCHITECTURE.md)
+
+---
+
 ## 🏗️ معماری
 
 ```
-SoroushClient (client.py)
-├── BrowserManager (browser.py)        → مدیریت Chrome
-├── Authenticator (auth.py)            → فرآیند لاگین
-├── ChatManager (chat.py)              → عملیات چت
-├── ContactManager (contacts.py)       → مدیریت مخاطبین
-├── ChannelManager (channel.py)        → عملیات کانال
-├── AutoReplyEngine (auto_reply.py)    → موتور پاسخ خودکار
-├── MessageTracker (message_tracker.py)→ جلوگیری از تکرار
-└── SessionManager (session.py)        → مدیریت سشن
+SoroushClient (client.py)          ← API عمومی ثابت
+└── BaseBackend
+    ├── SeleniumBackend            ← پیش‌فرض (Chrome + DOM)
+    │   ├── BrowserManager / Auth / Chat / Contacts / Channel
+    └── WebSocketBackend           ← MTProto روی WSS (بدون Chrome)
+        ├── MtprotoEngine (SPlusthon)
+        ├── LoopRunner (asyncio thread)
+        └── EventBus (new_message, …)
 
-MultiAccountManager (multi.py)
-└── Dict[phone, SoroushClient]         → چند اکانت
+AutoReplyEngine + MessageTracker   ← مشترک
+MultiAccountManager(backend=...)
 ```
 
 ---
