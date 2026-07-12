@@ -32,10 +32,12 @@ class MultiAccountManager:
         self,
         headless: bool = False,
         session_dir: str = "soropy_sessions",
+        backend: str = "selenium",
         **client_kwargs,
     ):
         self._headless = headless
         self._session_dir = session_dir
+        self._backend = backend
         self._client_kwargs = client_kwargs
         self._clients: Dict[str, SoroushClient] = {}
         self._lock = threading.Lock()
@@ -49,8 +51,11 @@ class MultiAccountManager:
         """
         norm = normalize_phone(phone)
         merged = {**self._client_kwargs, **kwargs}
+        # per-account backend override wins; else manager default
+        backend = merged.pop("backend", self._backend)
         client = SoroushClient(
             norm,
+            backend=backend,
             headless=self._headless,
             session_dir=self._session_dir,
             **merged,

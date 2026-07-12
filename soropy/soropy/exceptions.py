@@ -62,3 +62,21 @@ class ElementNotFoundError(SoroPyError):
 class DuplicateReplyError(SoroPyError):
     """Raised when attempting to send a duplicate reply."""
     pass
+
+
+class TransportError(SoroPyError):
+    """Raised when the underlying transport (WS / HTTP) fails."""
+    pass
+
+
+class ProtocolError(SoroPyError):
+    """Raised when a protocol frame cannot be encoded/decoded."""
+    pass
+
+
+class ProtocolNotReadyError(SoroPyError):
+    """
+    Raised when a WebSocket/protocol feature is scaffolded but the
+    real Soroush Plus wire format has not been filled in yet.
+    """
+    pass

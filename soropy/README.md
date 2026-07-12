@@ -25,6 +25,8 @@
 | 🖥️ **بدون پنجره** | حالت headless - بدون نمایش مرورگر |
 | 🧵 **Thread-safe** | طراحی ایمن برای چند نخی |
 | 💾 **ذخیره سشن** | بدون نیاز به لاگین مجدد |
+| 🔌 **دو Backend** | Selenium (UI) و WebSocket (پروتکل) |
+| ⚡ **رویداد لحظه‌ای** | `on("new_message")` روی backend وب‌سوکت |
 
 ---
 
@@ -32,11 +34,12 @@
 
 ```bash
 pip install soropy
+pip install soropy[ws]   # اختیاری – برای backend وب‌سوکت
 ```
 
 ### پیش‌نیازها
 - Python 3.8+
-- Google Chrome / Chromium
+- Google Chrome / Chromium (فقط backend=selenium)
 - ChromeDriver (مطابق نسخه Chrome)
 
 ---
@@ -160,21 +163,35 @@ client = SoroushClient(
 
 ---
 
+## 🔌 Backend وب‌سوکت / MTProto
+
+```bash
+pip install soropy[ws]
+```
+
+```python
+from soropy import SoroushClient
+
+client = SoroushClient("09123456789", backend="websocket")
+client.on("new_message", lambda e: print(e.data))
+client.login()
+client.send_message("علی", "سلام!")
+```
+
+جزئیات: `docs/WEBSOCKET_ARCHITECTURE.md`
+
+---
+
 ## 🏗️ معماری
 
 ```
-SoroushClient (client.py)
-├── BrowserManager (browser.py)        → مدیریت Chrome
-├── Authenticator (auth.py)            → فرآیند لاگین
-├── ChatManager (chat.py)              → عملیات چت
-├── ContactManager (contacts.py)       → مدیریت مخاطبین
-├── ChannelManager (channel.py)        → عملیات کانال
-├── AutoReplyEngine (auto_reply.py)    → موتور پاسخ خودکار
-├── MessageTracker (message_tracker.py)→ جلوگیری از تکرار
-└── SessionManager (session.py)        → مدیریت سشن
+SoroushClient (client.py)          ← API عمومی ثابت
+└── BaseBackend
+    ├── SeleniumBackend            ← پیش‌فرض (Chrome + DOM)
+    └── WebSocketBackend           ← رویدادمحور (experimental)
 
-MultiAccountManager (multi.py)
-└── Dict[phone, SoroushClient]         → چند اکانت
+AutoReplyEngine + MessageTracker   ← مشترک
+MultiAccountManager(backend=...)
 ```
 
 ---
