@@ -2,10 +2,9 @@
 Auto-reply engine with rule matching and duplicate prevention.
 """
 
-import time
 import threading
-from typing import List, Optional, Dict, Callable
-from dataclasses import dataclass, field
+from typing import List, Optional, Dict
+from dataclasses import dataclass
 
 from soropy.utils import get_logger
 from soropy.message_tracker import MessageTracker
@@ -53,14 +52,46 @@ class AutoReplyEngine:
     def __init__(
         self,
         tracker: Optional[MessageTracker] = None,
-        default_reply: str = "پیامت دریافت شد",
+        default_reply: Optional[str] = None,
         default_prefix: str = "جواب",
+        use_numbered_fallback: bool = False,
     ):
+        """
+        Parameters
+        ----------
+        tracker : MessageTracker, optional
+            Duplicate-prevention store.
+        default_reply : str or None
+            Used when no rule matches.  ``None`` means *no* automatic
+            default (return None) unless ``use_numbered_fallback`` is True.
+        default_prefix : str
+            Prefix for the legacy numbered fallback (``"جواب 1"``).
+        use_numbered_fallback : bool
+            If True and ``default_reply`` is None, fall back to
+            ``f"{default_prefix} {msg_index}"``.  Default False so an
+            unset default does not spam numbered replies.
+        """
         self._rules: List[ReplyRule] = []
         self._tracker = tracker or MessageTracker()
-        self.default_reply = default_reply
+        self._default_reply: Optional[str] = default_reply
         self.default_prefix = default_prefix
+        self.use_numbered_fallback = use_numbered_fallback
         self._lock = threading.Lock()
+        self.enabled: bool = True
+
+    # ── default_reply property ─────────────────────────
+
+    @property
+    def default_reply(self) -> Optional[str]:
+        return self._default_reply
+
+    @default_reply.setter
+    def default_reply(self, value: Optional[str]) -> None:
+        """Set the default reply text (or None to disable)."""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            self._default_reply = None
+        else:
+            self._default_reply = str(value)
 
     # ── Rule management ────────────────────────────────
 
@@ -82,7 +113,6 @@ class AutoReplyEngine:
         )
         with self._lock:
             self._rules.append(rule)
-            # Keep sorted by priority descending
             self._rules.sort(key=lambda r: r.priority, reverse=True)
         logger.debug("Rule added: '%s' → '%s'", keyword, response)
 
@@ -110,6 +140,16 @@ class AutoReplyEngine:
         for kw, resp in mapping.items():
             self.add_rule(kw, resp)
 
+    def export_rules_to_dict(self) -> Dict[str, str]:
+        """Export rules as keyword→response dict."""
+        with self._lock:
+            return {r.keyword: r.response for r in self._rules}
+
+    def has_rules(self) -> bool:
+        """True when at least one rule or a default_reply is configured."""
+        with self._lock:
+            return bool(self._rules) or bool(self._default_reply)
+
     # ── Reply generation ───────────────────────────────
 
     def get_reply(
@@ -122,11 +162,23 @@ class AutoReplyEngine:
         """
         Determine the reply for *message_text* from *chat_name*.
 
-        Returns None if the message has already been replied to
-        (unless skip_duplicate_check is True).
+        Returns None if:
+        * engine is disabled
+        * message already replied to
+        * no rule matches and no default is set
         """
-        text = message_text.strip()
+        if not self.enabled:
+            return None
+
+        text = (message_text or "").strip()
         if not text:
+            # Empty text: only reply if default is set (poll fallback path)
+            if not skip_duplicate_check and self._tracker.is_replied(chat_name, ""):
+                return None
+            if self._default_reply:
+                return self._default_reply
+            if self.use_numbered_fallback:
+                return f"{self.default_prefix} {msg_index}"
             return None
 
         # Duplicate check
@@ -140,8 +192,15 @@ class AutoReplyEngine:
                 if rule.matches(text):
                     return rule.response
 
-        # Default
-        return f"{self.default_prefix} {msg_index}"
+        # User-configured default_reply takes priority
+        if self._default_reply is not None:
+            return self._default_reply
+
+        # Optional legacy numbered fallback (off by default)
+        if self.use_numbered_fallback:
+            return f"{self.default_prefix} {msg_index}"
+
+        return None
 
     def mark_replied(self, chat_name: str, message_text: str) -> None:
         """Record that we replied to this message (prevents duplicates)."""

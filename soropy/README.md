@@ -1,70 +1,46 @@
-
 # SoroPy 🚀
 
-**حرفه‌ای‌ترین کتابخانه پایتون برای سروش پلاس**
+**کتابخانه حرفه‌ای پایتون برای سروش پلاس** — v**1.3.0**
 
 [![PyPI](https://img.shields.io/pypi/v/soropy)](https://pypi.org/project/soropy/)
-[![Downloads](https://img.shields.io/pypi/dm/soropy)](https://pypi.org/project/soropy/)
-[![Python](https://img.shields.io/pypi/pyversions/soropy)](https://pypi.org/project/soropy/)
 [![License](https://img.shields.io/pypi/l/soropy)](https://opensource.org/licenses/MIT)
 
 ---
 
-## ✨ امکانات
+## امکانات
 
-| قابلیت | توضیح |
-|--------|-------|
-| 🔐 **لاگین خودکار** | ورود با شماره + کد تأیید، ذخیره سشن |
-| 💬 **استخراج چت‌ها** | لیست همه / شخصی / گروه / کانال |
-| 📨 **ارسال پیام** | تکی و دسته‌ای به چت‌های شخصی |
-| 📢 **ارسال در کانال** | پست گذاشتن (نیاز به ادمین بودن) |
-| 📇 **مدیریت مخاطبین** | مشاهده، اضافه کردن، جستجو |
-| 🤖 **پاسخ خودکار** | موتور قوانین + جلوگیری از پاسخ تکراری |
-| 👁️ **مانیتور مداوم** | بررسی و پاسخ خودکار هر X ثانیه |
-| 👥 **چند اکانت** | مدیریت همزمان چندین حساب |
-| 🖥️ **بدون پنجره** | حالت headless - بدون نمایش مرورگر |
-| 🧵 **Thread-safe** | طراحی ایمن برای چند نخی |
-| 💾 **ذخیره سشن** | بدون نیاز به لاگین مجدد |
-| 🔌 **دو Backend** | Selenium (UI) و WebSocket (پروتکل) |
-| ⚡ **رویداد لحظه‌ای** | `on("new_message")` روی backend وب‌سوکت |
+| قابلیت | Selenium | WebSocket |
+|--------|:--------:|:---------:|
+| لاگین + سشن | ✅ | ✅ |
+| ارسال پیام / گروه / کانال | ✅ | ✅ |
+| `on("new_message")` | ❌ | ✅ |
+| auto-reply **فقط PV** | poll | push + poll |
+| `send_file` / دانلود مدیا | ❌ | ✅ |
+| حذف / ادیت / پین | محدود | ✅ |
+| kick / ban / promote | ❌ | ✅ |
+| block / report | ❌ | ✅ |
+| بدون Chrome | ❌ | ✅ |
 
 ---
 
-## 📦 نصب
+## نصب
 
 ```bash
 pip install soropy
-pip install soropy[ws]   # اختیاری – برای backend وب‌سوکت
+pip install "soropy[ws]"   # splusthon + aiohttp + pyaes + rsa
 ```
 
-### پیش‌نیازها
-- Python 3.8+
-- Google Chrome / Chromium (فقط backend=selenium)
-- ChromeDriver (مطابق نسخه Chrome)
+از GitHub (بدون `/tree/`):
+
+```bash
+pip install "soropy[ws] @ git+https://github.com/Alirezahjf/soropy.git@arena/019f5686-soropy#subdirectory=soropy"
+```
 
 ---
 
-## 🚀 شروع سریع
+## شروع سریع
 
-### استفاده ساده
-
-```python
-from soropy import SoroushClient
-
-client = SoroushClient("09123456789")
-client.login()
-
-# ارسال پیام
-client.send_message("علی", "سلام!")
-
-# استخراج لیست چت
-chats = client.get_chats()
-print(f"تعداد چت: {chats.total_count}")
-
-client.close()
-```
-
-### Context Manager
+### Selenium
 
 ```python
 from soropy import SoroushClient
@@ -74,100 +50,7 @@ with SoroushClient("09123456789", headless=True) as client:
     client.send_message("علی", "سلام!")
 ```
 
----
-
-## 🤖 پاسخ خودکار
-
-```python
-from soropy import SoroushClient
-
-client = SoroushClient("09123456789")
-client.login()
-
-# تعریف قوانین
-client.add_reply_rule("سلام", "علیک سلام! 👋")
-client.add_reply_rule("قیمت", "لطفاً به سایت مراجعه کنید")
-client.set_default_reply("پیامت دریافت شد ✅")
-
-# شروع مانیتور (Ctrl+C برای توقف)
-client.start_monitor(interval=30)
-
-client.close()
-```
-
-### جلوگیری از پاسخ تکراری
-SoroPy به‌صورت خودکار هش پیام‌های پاسخ‌داده‌شده را ذخیره می‌کند.
-حتی بعد از ریستارت برنامه، پیام‌های قبلی دوباره پاسخ نمی‌گیرند.
-
----
-
-## 👥 چند اکانت همزمان
-
-```python
-from soropy import MultiAccountManager
-
-with MultiAccountManager(headless=True) as mgr:
-    mgr.add_account("09123456789")
-    mgr.add_account("09187654321")
-
-    mgr.login_all()
-
-    # ارسال از هر اکانت
-    mgr.get_client("09123456789").send_message("علی", "سلام از اکانت ۱")
-    mgr.get_client("09187654321").send_message("علی", "سلام از اکانت ۲")
-
-    # مانیتور همه
-    mgr.start_all_monitors(interval=30)
-```
-
----
-
-## 📇 مخاطبین
-
-```python
-# لیست مخاطبین
-contacts = client.get_contacts()
-
-# اضافه کردن
-client.add_contact("09187654321", "محمد", "احمدی")
-
-# جستجو
-results = client.search_contacts("محمد")
-```
-
----
-
-## 📢 کانال
-
-```python
-# ارسال پست (نیاز به ادمین بودن)
-client.send_to_channel("@my_channel", "پیام تست")
-```
-
----
-
-## ⚙️ تنظیمات پیشرفته
-
-```python
-client = SoroushClient(
-    phone="09123456789",
-    headless=True,                     # بدون پنجره
-    session_dir="my_sessions",         # مسیر ذخیره سشن
-    tracker_path="my_tracker.json",    # فایل ردیاب پیام
-    log_file="soropy.log",             # فایل لاگ
-    chrome_binary="/usr/bin/chromium", # مسیر Chrome
-    chromedriver_path="/usr/bin/chromedriver",
-    extra_chrome_args=["--proxy-server=..."],
-)
-```
-
----
-
-## 🔌 Backend وب‌سوکت / MTProto
-
-```bash
-pip install soropy[ws]
-```
+### WebSocket realtime
 
 ```python
 from soropy import SoroushClient
@@ -175,59 +58,86 @@ from soropy import SoroushClient
 client = SoroushClient("09123456789", backend="websocket")
 client.on("new_message", lambda e: print(e.data))
 client.login()
-client.send_message("علی", "سلام!")
+client.add_reply_rule("سلام", "علیک سلام 👋")
+client.set_default_reply("دریافت شد ✅")   # نه «جواب N»
+client.set_private_only(True)              # پیش‌فرض
+client.start_monitor(interval=120)         # safety-net؛ فقط PV
 ```
 
-جزئیات: `docs/WEBSOCKET_ARCHITECTURE.md`
+### فایل / مودریشن
+
+```python
+client.send_file("علی", "a.jpg", caption="عکس")
+client.reply("علی", 123, "پاسخ")
+client.send_to_group("گروه", "سلام")
+client.send_to_channel("@ch", "پست")
+client.kick("گروه", "user")
+client.ban("گروه", "user")
+client.promote("گروه", "user", delete_messages=True)
+client.block_user("spam")
+client.report("spam", reason="spam")
+```
+
+### Multi-account
+
+```python
+from soropy import MultiAccountManager
+
+with MultiAccountManager(backend="websocket") as mgr:
+    mgr.add_account("0912...")
+    mgr.login_all()
+    mgr.start_all_monitors(interval=120)
+```
 
 ---
 
-## 🏗️ معماری
+## منوی تعاملی
+
+از ریشهٔ ریپو:
+
+```bash
+python interactive_manager.py
+```
+
+تنظیمات در `manager_config.json` ذخیره می‌شود (شماره، backend، قوانین، Listener/Monitor).
+
+---
+
+## سشن و رویداد
+
+- Selenium: `soropy_sessions/`
+- WebSocket: `soropy_ws_sessions/*.session` (SQLite)
+- رویدادها: `new_message`, `connected`, `auth_success`, `error`, …
+
+Payload `new_message`:  
+`message_id, chat_id, chat_name, text, sender_id, sender_name, is_outgoing, is_private, is_group, is_channel, timestamp, reply_to_id`
+
+---
+
+## عیب‌یابی
+
+| مشکل | کار |
+|------|-----|
+| شماره `0912xxxxxxx` | فقط رقم واقعی؛ validate قبل از login |
+| سیل `CHAT_ADMIN_REQUIRED` | auto-reply فقط PV؛ monitor را خاموش/کند کنید |
+| WebSocket قطع هنگام reply | 1.3.0 از `create_task` استفاده می‌کند |
+| Unclosed aiohttp | `client.close()` |
+| splusthon | `pip install soropy[ws]` |
+
+---
+
+## معماری
 
 ```
-SoroushClient (client.py)          ← API عمومی ثابت
+SoroushClient
 └── BaseBackend
-    ├── SeleniumBackend            ← پیش‌فرض (Chrome + DOM)
-    └── WebSocketBackend           ← رویدادمحور (experimental)
-
-AutoReplyEngine + MessageTracker   ← مشترک
-MultiAccountManager(backend=...)
+    ├── SeleniumBackend
+    └── WebSocketBackend → MtprotoEngine (SPlusthon) + LoopRunner + EventBus
 ```
 
----
+## لایسنس
 
-## 📄 License
+- هسته: **MIT**
+- `soropy[ws]` / SPlusthon: **GPL-3.0** (اختیاری)
 
-MIT License - آزاد برای استفاده شخصی و تجاری
-
----
-
-## 📬 ارتباط با توسعه‌دهنده
-
-<p align="center">
-
-[![Telegram](https://img.shields.io/badge/Telegram-@mr__hjf-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/mr_hjf)
-[![Rubika](https://img.shields.io/badge/Rubika-@mr____hjf-8E24AA?style=for-the-badge&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAA0SURBVDhPY/hPIWBgGHaaiYECMKoRN0A1Bv9HF8QLRjUiA1Q7R0fDBCgNRjXiBgz/AQDmXwb/vnToiQAAAABJRU5ErkJggg==)](https://rubika.ir/mr__hjf)
-[![Bale](https://img.shields.io/badge/Bale-@mrhjf-4CAF50?style=for-the-badge&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAA0SURBVDhPY/hPIWBgGHaaiYECMKoRN0A1Bv9HF8QLRjUiA1Q7R0fDBCgNRjXiBgz/AQDmXwb/vnToiQAAAABJRU5ErkJggg==)](https://ble.ir/mrhjf)
-
-</p>
-
----
-
-## 🤝 مشارکت
-
-نظرات، پیشنهادات و مشارکت‌های شما استقبال می‌شود!
-
-- 💬 پیام مستقیم از طریق شبکه‌های بالا
-- 🐛 گزارش باگ از طریق [Issues](https://github.com/Mrhjf/soropy/issues)
-- 🔀 ارسال Pull Request از طریق [GitHub](https://github.com/Mrhjf/soropy)
-
----
-
-<p align="center">
-  ساخته شده با ❤️ توسط <a href="https://t.me/mr_hjf">MrHjf</a>
-  <br/>
-  <a href="https://pypi.org/project/soropy/">PyPI</a> •
-  <a href="https://github.com/Mrhjf/soropy">GitHub</a> •
-  <a href="https://t.me/mr_hjf">تلگرام</a>
-</p>
+مستندات کامل‌تر در README ریشهٔ ریپو و `docs/WEBSOCKET_ARCHITECTURE.md`.

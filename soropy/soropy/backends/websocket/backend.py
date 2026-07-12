@@ -14,7 +14,7 @@ transport-agnostic.
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 from soropy.backends.base import (
     BaseBackend,
@@ -35,6 +35,23 @@ from soropy.utils import get_logger
 from soropy import constants as C
 
 logger = get_logger("soropy.backends.websocket")
+
+# Soft-skip tokens for poll/auto-reply (don't flood logs)
+_SOFT_SKIP_TOKENS = (
+    "CHAT_ADMIN_REQUIRED",
+    "CHAT_WRITE_FORBIDDEN",
+    "CHAT_SEND",
+    "USER_BANNED_IN_CHANNEL",
+    "CHANNEL_PRIVATE",
+    "CHAT_RESTRICTED",
+    "RIGHT_FORBIDDEN",
+    "ADMIN PRIVILEGES",
+)
+
+
+def _is_soft_skip(err: str) -> bool:
+    upper = (err or "").upper()
+    return any(t in upper for t in _SOFT_SKIP_TOKENS)
 
 
 class WebSocketBackend(BaseBackend):
@@ -71,6 +88,7 @@ class WebSocketBackend(BaseBackend):
         self._lock = threading.RLock()
 
         self._chat_index: Dict[str, str] = {}  # name → id
+        self._chat_kinds: Dict[str, str] = {}  # name → personal|group|channel
         self._unread: Dict[str, int] = {}
         self._chats_cache: Optional[ChatCollection] = None
 
@@ -112,6 +130,10 @@ class WebSocketBackend(BaseBackend):
         """Duck-type compatibility with older session API."""
         return _SessionFacade(self)
 
+    @property
+    def engine(self) -> Optional[MtprotoEngine]:
+        return self._engine
+
     # ── events ─────────────────────────────────────────
 
     def on(self, event: str, handler: EventHandler) -> None:
@@ -145,7 +167,6 @@ class WebSocketBackend(BaseBackend):
             self._bus.emit(SplusEvent.CONNECTED.value, {"phone": phone})
         except Exception as exc:
             self._bus.emit(SplusEvent.ERROR.value, {"error": str(exc)})
-            # Clean up half-open engine
             try:
                 self._engine.disconnect()
             except Exception:
@@ -193,8 +214,8 @@ class WebSocketBackend(BaseBackend):
         if self._engine is not None:
             try:
                 self._engine.disconnect()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("engine disconnect: %s", exc)
             self._engine = None
         self._bus.emit(SplusEvent.DISCONNECTED.value, {"phone": self._phone})
         logger.info("WebSocket/MTProto backend closed for %s", self._phone)
@@ -204,7 +225,18 @@ class WebSocketBackend(BaseBackend):
     def _on_incoming(self, msg: IncomingMessage) -> None:
         if msg.chat_id and msg.chat_name:
             self._chat_index[msg.chat_name] = msg.chat_id
-        if not msg.is_outgoing and msg.chat_name:
+        kind = (
+            "personal"
+            if msg.is_private
+            else "channel"
+            if msg.is_channel
+            else "group"
+            if msg.is_group
+            else self._chat_kinds.get(msg.chat_name, "personal")
+        )
+        if msg.chat_name:
+            self._chat_kinds[msg.chat_name] = kind
+        if not msg.is_outgoing and msg.chat_name and msg.is_private:
             self._unread[msg.chat_name] = self._unread.get(msg.chat_name, 0) + 1
             self._bus.emit(
                 SplusEvent.UNREAD_CHANGED.value,
@@ -222,15 +254,16 @@ class WebSocketBackend(BaseBackend):
         for d in dialogs:
             name = d["name"]
             self._chat_index[name] = d["id"]
-            collection.all.append(name)
             kind = d["type"]
+            self._chat_kinds[name] = kind
+            collection.all.append(name)
             if kind == "channel":
                 collection.channels.append(name)
             elif kind == "group":
                 collection.groups.append(name)
             else:
                 collection.personal.append(name)
-            if d.get("unread"):
+            if d.get("unread") and kind == "personal":
                 self._unread[name] = int(d["unread"])
         self._chats_cache = collection
         self._bus.emit(
@@ -259,37 +292,84 @@ class WebSocketBackend(BaseBackend):
             )
             return SendResult(True, chat_name, message)
         except Exception as exc:
-            return SendResult(False, chat_name, message, str(exc))
+            err = str(exc)
+            if _is_soft_skip(err):
+                logger.debug("send soft-skip %s: %s", chat_name, err)
+            return SendResult(False, chat_name, message, err)
 
-    def get_unread_personal_chats(self) -> List[UnreadChat]:
-        # Prefer live unread from dialogs when possible
+    def schedule_send(
+        self,
+        chat_name: str,
+        message: str,
+        reply_to: Optional[int] = None,
+        on_done: Optional[Callable[[bool, str], None]] = None,
+    ) -> None:
+        """Non-blocking send for realtime auto-reply."""
+        self._ensure_ready()
+        assert self._engine is not None
+        self._engine.schedule_send(
+            chat_name, message, reply_to=reply_to, on_done=on_done
+        )
+
+    def get_unread_personal_chats(self, max_chats: int = 5) -> List[UnreadChat]:
+        """
+        Only *personal* chats with unread.
+
+        Parameters
+        ----------
+        max_chats : int
+            Cap per poll cycle to avoid flooding (default 5).
+        """
         if self._engine and self._logged_in:
             try:
                 dialogs = self._engine.get_dialogs(limit=100)
                 unread = []
                 for d in dialogs:
-                    if d["type"] == "personal" and d.get("unread", 0) > 0:
+                    kind = d.get("type") or "personal"
+                    self._chat_kinds[d["name"]] = kind
+                    if kind != "personal":
+                        continue
+                    if d.get("unread", 0) > 0:
                         self._unread[d["name"]] = d["unread"]
                         unread.append(UnreadChat(name=d["name"], count=d["unread"]))
+                        if len(unread) >= max_chats:
+                            break
                 if unread:
                     return unread
             except Exception as exc:
                 logger.debug("refresh unread failed: %s", exc)
-        return [
-            UnreadChat(name=n, count=c)
-            for n, c in self._unread.items()
-            if c > 0
-        ]
+        # Fallback: in-memory counters, personal only
+        result = []
+        for n, c in self._unread.items():
+            if c <= 0:
+                continue
+            kind = self._chat_kinds.get(n, "personal")
+            if kind != "personal":
+                continue
+            result.append(UnreadChat(name=n, count=c))
+            if len(result) >= max_chats:
+                break
+        return result
 
     def get_unread_messages(self, chat_name: str, count: int = 10) -> List[MessageInfo]:
         self._ensure_ready()
         assert self._engine is not None
+        # Guard: never pull history for non-personal during auto-reply poll
+        kind = self._chat_kinds.get(chat_name) or self._engine.chat_kind(chat_name)
+        if kind and kind != "personal":
+            logger.debug("skip non-personal unread pull: %s (%s)", chat_name, kind)
+            self._unread.pop(chat_name, None)
+            return []
         try:
             items = self._engine.get_messages(
                 chat_name, limit=max(count, 10), incoming_only=True
             )
         except Exception as exc:
-            logger.error("get_messages failed: %s", exc)
+            err = str(exc)
+            if _is_soft_skip(err):
+                logger.debug("get_messages soft-skip %s: %s", chat_name, err)
+            else:
+                logger.error("get_messages failed: %s", exc)
             return []
         messages: List[MessageInfo] = []
         for i, item in enumerate(items[-count:]):
@@ -318,11 +398,101 @@ class WebSocketBackend(BaseBackend):
         self._ensure_ready()
         assert self._engine is not None
         try:
-            reply_to = int(message_id) if message_id and str(message_id).isdigit() else None
+            reply_to = (
+                int(message_id) if message_id and str(message_id).isdigit() else None
+            )
             self._engine.send_message(chat_name, reply_text, reply_to=reply_to)
             return SendResult(True, chat_name, reply_text)
         except Exception as exc:
-            return SendResult(False, chat_name, reply_text, str(exc))
+            err = str(exc)
+            if _is_soft_skip(err):
+                logger.debug("reply soft-skip %s: %s", chat_name, err)
+            return SendResult(False, chat_name, reply_text, err)
+
+    def schedule_reply(
+        self,
+        chat_name: str,
+        message_id: str,
+        reply_text: str,
+        on_done: Optional[Callable[[bool, str], None]] = None,
+    ) -> None:
+        reply_to = (
+            int(message_id) if message_id and str(message_id).isdigit() else None
+        )
+        self.schedule_send(
+            chat_name, reply_text, reply_to=reply_to, on_done=on_done
+        )
+
+    # ── media / message tools ──────────────────────────
+
+    def send_file(
+        self,
+        chat_name: str,
+        path: str,
+        caption: str = "",
+        force_document: bool = False,
+        reply_to: Union[str, int, None] = None,
+    ) -> SendResult:
+        self._ensure_ready()
+        assert self._engine is not None
+        try:
+            rt = int(reply_to) if reply_to not in (None, "") else None
+            info = self._engine.send_file(
+                chat_name,
+                path,
+                caption=caption,
+                force_document=force_document,
+                reply_to=rt,
+            )
+            return SendResult(True, chat_name, caption or path)
+        except Exception as exc:
+            return SendResult(False, chat_name, caption or path, str(exc))
+
+    def download_media(
+        self,
+        chat_name: str,
+        message_id: Union[str, int],
+        file_path: Optional[str] = None,
+    ) -> Optional[str]:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.download_media(chat_name, message_id, file_path)
+
+    def delete_messages(
+        self,
+        chat_name: str,
+        message_ids: Sequence[Union[str, int]],
+        revoke: bool = True,
+    ) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.delete_messages(chat_name, message_ids, revoke=revoke)
+
+    def edit_message(
+        self, chat_name: str, message_id: Union[str, int], text: str
+    ) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.edit_message(chat_name, message_id, text)
+
+    def pin_message(
+        self,
+        chat_name: str,
+        message_id: Union[str, int],
+        notify: bool = False,
+    ) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.pin_message(chat_name, message_id, notify=notify)
+
+    def unpin_message(
+        self,
+        chat_name: str,
+        message_id: Optional[Union[str, int]] = None,
+    ) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.unpin_message(chat_name, message_id)
 
     # ── contacts ───────────────────────────────────────
 
@@ -341,11 +511,72 @@ class WebSocketBackend(BaseBackend):
         q = query.strip().lower()
         return [n for n in self.get_contacts() if q in n.lower()]
 
-    # ── channels ───────────────────────────────────────
+    def block_user(self, user: str) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.block_user(user)
+
+    def unblock_user(self, user: str) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.unblock_user(user)
+
+    def report(
+        self, entity: str, reason: str = "spam", message: str = ""
+    ) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.report(entity, reason=reason, message=message)
+
+    # ── moderation ─────────────────────────────────────
+
+    def kick(self, chat: str, user: str) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.kick(chat, user)
+
+    def ban(self, chat: str, user: str, **kwargs) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.ban(chat, user, **kwargs)
+
+    def unban(self, chat: str, user: str) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.unban(chat, user)
+
+    def set_permissions(
+        self, chat: str, user: Optional[str] = None, **rights
+    ) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.set_permissions(chat, user=user, **rights)
+
+    def promote(self, chat: str, user: str, **admin_rights) -> bool:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.promote(chat, user, **admin_rights)
+
+    def get_participants(self, chat: str, limit: int = 100) -> List[Dict[str, Any]]:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.get_participants(chat, limit=limit)
+
+    def get_permissions(
+        self, chat: str, user: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.get_permissions(chat, user=user)
+
+    # ── channels / groups ──────────────────────────────
 
     def send_to_channel(self, channel_url: str, message: str) -> bool:
         result = self.send_message(channel_url, message)
         return result.success
+
+    def send_to_group(self, group: str, message: str) -> SendResult:
+        return self.send_message(group, message)
 
     # ── session helpers ────────────────────────────────
 
@@ -357,7 +588,6 @@ class WebSocketBackend(BaseBackend):
     def delete_session(self) -> bool:
         if self._engine:
             return self._engine.delete_session()
-        # offline delete
         eng = MtprotoEngine(phone=self._phone, session_dir=self._session_dir)
         return eng.delete_session()
 
@@ -365,6 +595,11 @@ class WebSocketBackend(BaseBackend):
         if not self._engine:
             return None
         return self._engine.get_me()
+
+    def chat_kind(self, name: str) -> Optional[str]:
+        return self._chat_kinds.get(name) or (
+            self._engine.chat_kind(name) if self._engine else None
+        )
 
     # ── guards ─────────────────────────────────────────
 

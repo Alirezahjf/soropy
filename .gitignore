@@ -1,4 +1,5 @@
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -12,3 +13,5 @@ soropy_sessions/
 soropy_ws_sessions/
 ws_capture.json
 *.log
+manager_config.json
+rules_export.json
