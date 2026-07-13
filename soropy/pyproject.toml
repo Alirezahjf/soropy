@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "soropy"
-version = "1.3.3"
+version = "1.3.4"
 description = "کتابخانه حرفه‌ای سروش پلاس برای پایتون - Professional Soroush Plus Web Client Library"
 readme = "README.md"
 license = {text = "MIT"}

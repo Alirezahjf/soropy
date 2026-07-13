@@ -1,4 +1,4 @@
-# SoroPy WebSocket / MTProto Architecture — 1.3.3
+# SoroPy WebSocket / MTProto Architecture — 1.3.4
 
 > Endpoint: `wss://im-server.splus.ir:443/apiws`
 > Origin: `https://web.splus.ir`
@@ -239,3 +239,16 @@ splusthon>=1.1.2,<1.1.3
 - API id/hash وب عمومی‌اند، اما session هر کاربر محرمانه است.
 - هستهٔ SoroPy MIT است.
 - SPlusthon اختیاری و GPL-3.0 است؛ توزیع ترکیبی می‌تواند مشمول GPL باشد.
+
+## 13. مثال‌های کاربردی
+
+در نسخهٔ 1.3.4 یک مجموعهٔ مستقل از مثال‌های production-oriented برای WebSocket اضافه شده است:
+
+| فایل | کاربرد |
+|---|---|
+| [`soropy/examples/websocket/group_moderator.py`](../soropy/examples/websocket/group_moderator.py) | مدیر گروه thread-safe با queue، ضدلینک، ضدواژه، ضد flood، ضد تکرار، state اتمیک و سه اخطار |
+| [`soropy/examples/websocket/ai_assistant.py`](../soropy/examples/websocket/ai_assistant.py) | دستیار چندارائه‌دهنده‌ای AI با lazy import برای OpenAI، Gemini، Claude و Ollama |
+| [`soropy/examples/websocket/capability_cookbook.py`](../soropy/examples/websocket/capability_cookbook.py) | cookbook کامل APIهای WebSocket، با جداسازی عملیات destructive از main |
+| [`soropy/examples/websocket/README.md`](../soropy/examples/websocket/README.md) | راهنمای فارسی نصب، env، امنیت، moderation، AI و MultiAccount |
+
+خلاصهٔ سریع این مجموعه در [`WEBSOCKET_EXAMPLES.md`](WEBSOCKET_EXAMPLES.md) آمده است.
