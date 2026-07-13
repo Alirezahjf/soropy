@@ -6,7 +6,7 @@
 [![Backend](https://img.shields.io/badge/WebSocket-MTProto-success)](../../README.md)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-yellow)](https://www.python.org/)
 
-**مدیر گروه، دستیار هوش مصنوعی و cookbook کامل API برای سروش‌پلاس**
+**مدیر گروه، دستیار AI، میز پشتیبانی، کمپین امن، audit logger و cookbook کامل API**
 
 </div>
 
@@ -19,6 +19,9 @@
 | [`group_moderator.py`](group_moderator.py) | مدیر گروه ضدلینک/واژه/flood با سه اخطار | `python -m examples.websocket.group_moderator` |
 | [`ai_assistant.py`](ai_assistant.py) | دستیار AI با OpenAI/Gemini/Claude/Ollama | `python -m examples.websocket.ai_assistant` |
 | [`capability_cookbook.py`](capability_cookbook.py) | نمونهٔ همهٔ APIهای WebSocket | `python -m examples.websocket.capability_cookbook` |
+| [`support_desk_bot.py`](support_desk_bot.py) | میز پشتیبانی ticket-based | `python -m examples.websocket.support_desk_bot` |
+| [`campaign_broadcaster.py`](campaign_broadcaster.py) | کمپین پیام‌رسانی امن (dry-run پیش‌فرض) | `python -m examples.websocket.campaign_broadcaster` |
+| [`event_audit_logger.py`](event_audit_logger.py) | Audit logger رویدادها به JSONL | `python -m examples.websocket.event_audit_logger` |
 | [`README.md`](README.md) | همین راهنما | — |
 
 ## نصب پایه
@@ -162,6 +165,63 @@ export SOROPY_AI_GROUP="نام دقیق گروه"
 ### حریم خصوصی
 
 متن پیام‌ها برای provider انتخابی شما ارسال می‌شود. برای دادهٔ حساس از Ollama محلی استفاده کنید یا provider ابری را خاموش نگه دارید.
+
+## میز پشتیبانی ticket-based
+
+پیام‌های PV به ticket تبدیل می‌شوند و خلاصه به گروه اپراتورها می‌رود. state در `soropy_ws_sessions/support_tickets.json` با نوشتن atomic ذخیره می‌شود.
+
+```bash
+export SOROPY_PHONE="09123456789"
+export SOROPY_SESSION_DIR="soropy_ws_sessions"
+export SOROPY_SUPPORT_GROUP="گروه پشتیبانی"
+export SOROPY_SUPPORT_GROUP_TARGET="@support_group_or_id"
+export SOROPY_SUPPORT_WELCOME="پیام شما ثبت شد."
+python -m examples.websocket.support_desk_bot
+```
+
+### فرمان‌های اپراتور در گروه
+
+```text
+/tickets
+/ticket USER_ID
+/assign USER_ID OPERATOR_NAME
+/close USER_ID
+/stats
+```
+
+EventBus مسدود نمی‌شود: event وارد queue می‌شود و worker daemon پردازش می‌کند. shutdown با signal تمیز است و در `finally` حتماً `bot.stop()` و `client.close()` اجرا می‌شود.
+
+## کمپین پیام‌رسانی امن
+
+پیش‌فرض **dry-run** است و هیچ پیامی ارسال نمی‌شود مگر `SOROPY_CAMPAIGN_CONFIRM=YES`.
+
+```bash
+export SOROPY_PHONE="09123456789"
+export SOROPY_CAMPAIGN_TARGETS="targets.csv"
+export SOROPY_CAMPAIGN_TEXT="سلام {name}! ({kind}) {note}"
+export SOROPY_CAMPAIGN_FILE=""          # اختیاری؛ در صورت وجود از send_file استفاده می‌شود
+export SOROPY_CAMPAIGN_DELAY="2"
+export SOROPY_CAMPAIGN_MAX="50"
+# فقط وقتی واقعاً می‌خواهید ارسال شود:
+# export SOROPY_CAMPAIGN_CONFIRM=YES
+python -m examples.websocket.campaign_broadcaster
+```
+
+CSV هدف باید ستون‌های `name,kind,note` داشته باشد. اگر CSV نبود، از `get_chats().personal` هدف ساخته می‌شود.
+
+## Audit logger رویدادها
+
+رویدادهای realtime را در JSONL ذخیره می‌کند و فیلدهای حساس (`phone`, `token`, `access_token`, `refresh_token`, `auth_key`, `code`) را به `***` تبدیل می‌کند.
+
+```bash
+export SOROPY_PHONE="09123456789"
+export SOROPY_SESSION_DIR="soropy_ws_sessions"
+export SOROPY_AUDIT_LOG="soropy_ws_sessions/events_audit.jsonl"
+export SOROPY_AUDIT_REPORT_TO="@ops_chat"   # اختیاری
+python -m examples.websocket.event_audit_logger
+```
+
+رویدادهای ثبت‌شده: `connected`, `auth_success`, `new_message`, `message_sent`, `chat_updated`, `unread_changed`, `error`, `disconnected`.
 
 ## جدول API WebSocket
 

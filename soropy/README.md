@@ -40,7 +40,7 @@ SoroPy یک API واحد و sync به شما می‌دهد تا بدون درگ�
 - WebSocket / MTProto برای اجرای سبک، realtime، بدون Chrome و مناسب server.
 - auto-reply امن با پیش‌فرض فقط PV.
 - مدیریت چند اکانت، session پایدار، contact، media و moderation.
-- مثال‌های آمادهٔ 1.3.4 برای مدیر گروه، AI و cookbook کامل.
+- مثال‌های آمادهٔ 1.3.4 برای مدیر گروه، AI، cookbook کامل، میز پشتیبانی، کمپین امن و audit logger.
 
 ## جدول مقایسه Selenium و WebSocket
 
@@ -130,7 +130,10 @@ handlerهای کاربر خارج از thread دریافت MTProto اجرا می
 | مدیر تمام‌عیار گروه | [`group_moderator.py`](soropy/examples/websocket/group_moderator.py) | ضدلینک، ضدواژه، ضد flood، ضد تکرار، state پایدار و سه اخطار |
 | دستیار هوش مصنوعی | [`ai_assistant.py`](soropy/examples/websocket/ai_assistant.py) | OpenAI، compatible، Gemini، Claude و Ollama محلی |
 | Cookbook کامل API | [`capability_cookbook.py`](soropy/examples/websocket/capability_cookbook.py) | نمونهٔ همهٔ متدهای WebSocket بدون اجرای خودکار عملیات خطرناک |
-| راهنمای مثال‌ها | [`examples/websocket/README.md`](soropy/examples/websocket/README.md) | نصب، env، امنیت، AI، moderation و MultiAccount |
+| میز پشتیبانی ticket-based | [`support_desk_bot.py`](soropy/examples/websocket/support_desk_bot.py) | تبدیل PV به ticket، اعلان به گروه اپراتورها، assign/close/stats |
+| کمپین پیام‌رسانی امن | [`campaign_broadcaster.py`](soropy/examples/websocket/campaign_broadcaster.py) | dry-run پیش‌فرض، CSV هدف، template و confirm اجباری برای ارسال واقعی |
+| Audit logger رویدادها | [`event_audit_logger.py`](soropy/examples/websocket/event_audit_logger.py) | JSONL امن با sanitize فیلدهای حساس و گزارش خلاصه |
+| راهنمای مثال‌ها | [`examples/websocket/README.md`](soropy/examples/websocket/README.md) | نصب، env، امنیت، AI، moderation، پشتیبانی، کمپین و MultiAccount |
 
 راهنمای مستندات: [`docs/WEBSOCKET_EXAMPLES.md`](docs/WEBSOCKET_EXAMPLES.md)
 
@@ -325,15 +328,17 @@ API عمومی web client: `1030400 / 6edb16cf88714a4e9a805e928c39c937`
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
-pip install -e "./soropy[ws]" pytest ruff build
-python -m compileall -q soropy/soropy soropy/examples soropy/tests interactive_manager.py
+pip install -e "./soropy[ws]" pytest ruff build twine
+python -m compileall -q soropy/soropy soropy/examples soropy/tests scripts/publish_pypi.py interactive_manager.py
 pytest -q soropy/tests
-ruff check soropy/examples/websocket soropy/tests/test_websocket_examples.py
+ruff check soropy/examples/websocket soropy/tests/test_websocket_examples.py scripts/publish_pypi.py
 python -m build soropy
 cmp -s README.md soropy/README.md
+# dry-run انتشار PyPI (بدون upload):
+python scripts/publish_pypi.py --no-upload
 ```
 
-تست endpoint واقعی login/send/receive/upload نیازمند حساب آزمایشی است.
+تست endpoint واقعی login/send/receive/upload نیازمند حساب آزمایشی است. پکیج PyPI همچنان با نام `soropy` و extra نصب `pip install "soropy[ws]"` منتشر می‌شود.
 
 ## لایسنس
 
