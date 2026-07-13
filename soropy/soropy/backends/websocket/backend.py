@@ -82,6 +82,13 @@ class WebSocketBackend(BaseBackend):
     ):
         self._phone = phone
         self._session_dir = session_dir
+        self._ws_url = ws_url or C.WS_URL
+        self._origin = origin or C.WS_ORIGIN
+        if self._ws_url != C.WS_URL or self._origin != C.WS_ORIGIN:
+            logger.warning(
+                "SPlusthon currently controls endpoint/origin; custom ws_url/origin "
+                "cannot be applied and the official Soroush endpoint will be used."
+            )
         self._bus = EventBus()
         self._engine: Optional[MtprotoEngine] = None
         self._logged_in = False
@@ -154,6 +161,14 @@ class WebSocketBackend(BaseBackend):
     ) -> LoginStatus:
         require_splusthon()
         self._phone = phone
+        if self._engine is not None:
+            # Re-login on the same object must not leak its old loop/socket or
+            # discard event subscriptions.
+            try:
+                self._engine.disconnect()
+            finally:
+                self._engine = None
+                self._logged_in = False
         self._bus.emit(SplusEvent.CONNECTING.value, {"phone": phone})
 
         self._engine = MtprotoEngine(
@@ -210,6 +225,7 @@ class WebSocketBackend(BaseBackend):
             raise LoginError(str(exc)) from exc
 
     def close(self) -> None:
+        was_active = self._logged_in or self._engine is not None
         self._logged_in = False
         if self._engine is not None:
             try:
@@ -217,32 +233,40 @@ class WebSocketBackend(BaseBackend):
             except Exception as exc:
                 logger.debug("engine disconnect: %s", exc)
             self._engine = None
-        self._bus.emit(SplusEvent.DISCONNECTED.value, {"phone": self._phone})
-        logger.info("WebSocket/MTProto backend closed for %s", self._phone)
+        if was_active:
+            self._bus.emit(SplusEvent.DISCONNECTED.value, {"phone": self._phone})
+            logger.info("WebSocket/MTProto backend closed for %s", self._phone)
+        self._bus.close()
 
     # ── incoming messages ──────────────────────────────
 
     def _on_incoming(self, msg: IncomingMessage) -> None:
-        if msg.chat_id and msg.chat_name:
-            self._chat_index[msg.chat_name] = msg.chat_id
-        kind = (
-            "personal"
-            if msg.is_private
-            else "channel"
-            if msg.is_channel
-            else "group"
-            if msg.is_group
-            else self._chat_kinds.get(msg.chat_name, "personal")
-        )
-        if msg.chat_name:
-            self._chat_kinds[msg.chat_name] = kind
-        if not msg.is_outgoing and msg.chat_name and msg.is_private:
-            self._unread[msg.chat_name] = self._unread.get(msg.chat_name, 0) + 1
-            self._bus.emit(
-                SplusEvent.UNREAD_CHANGED.value,
-                {"chat_name": msg.chat_name, "count": self._unread[msg.chat_name]},
+        unread_count: Optional[int] = None
+        with self._lock:
+            if msg.chat_id and msg.chat_name:
+                self._chat_index[msg.chat_name] = msg.chat_id
+            kind = (
+                "personal"
+                if msg.is_private
+                else "channel"
+                if msg.is_channel
+                else "group"
+                if msg.is_group
+                else self._chat_kinds.get(msg.chat_name, "personal")
             )
-        self._bus.emit(SplusEvent.NEW_MESSAGE.value, msg.to_event_data())
+            if msg.chat_name:
+                self._chat_kinds[msg.chat_name] = kind
+            if not msg.is_outgoing and msg.chat_name and msg.is_private:
+                unread_count = self._unread.get(msg.chat_name, 0) + 1
+                self._unread[msg.chat_name] = unread_count
+
+        if unread_count is not None:
+            self._bus.emit_async(
+                SplusEvent.UNREAD_CHANGED.value,
+                {"chat_name": msg.chat_name, "count": unread_count},
+            )
+        # Never execute user callbacks on SPlusthon's receive/ping event loop.
+        self._bus.emit_async(SplusEvent.NEW_MESSAGE.value, msg.to_event_data())
 
     # ── chats ──────────────────────────────────────────
 
@@ -312,43 +336,38 @@ class WebSocketBackend(BaseBackend):
         )
 
     def get_unread_personal_chats(self, max_chats: int = 5) -> List[UnreadChat]:
-        """
-        Only *personal* chats with unread.
-
-        Parameters
-        ----------
-        max_chats : int
-            Cap per poll cycle to avoid flooding (default 5).
-        """
+        """Return at most *max_chats* server-confirmed personal unread dialogs."""
         if self._engine and self._logged_in:
             try:
                 dialogs = self._engine.get_dialogs(limit=100)
-                unread = []
-                for d in dialogs:
-                    kind = d.get("type") or "personal"
-                    self._chat_kinds[d["name"]] = kind
-                    if kind != "personal":
-                        continue
-                    if d.get("unread", 0) > 0:
-                        self._unread[d["name"]] = d["unread"]
-                        unread.append(UnreadChat(name=d["name"], count=d["unread"]))
-                        if len(unread) >= max_chats:
-                            break
-                if unread:
-                    return unread
+                unread: List[UnreadChat] = []
+                fresh_counts: Dict[str, int] = {}
+                with self._lock:
+                    for dialog in dialogs:
+                        name = dialog["name"]
+                        kind = dialog.get("type") or "personal"
+                        self._chat_kinds[name] = kind
+                        count = int(dialog.get("unread", 0) or 0)
+                        if kind == "personal" and count > 0:
+                            fresh_counts[name] = count
+                            if len(unread) < max(0, int(max_chats)):
+                                unread.append(UnreadChat(name=name, count=count))
+                    # A successful refresh is authoritative: discard stale
+                    # in-memory counters so old history is never auto-replied.
+                    self._unread = fresh_counts
+                return unread
             except Exception as exc:
-                logger.debug("refresh unread failed: %s", exc)
-        # Fallback: in-memory counters, personal only
+                logger.debug("refresh unread failed; using realtime counters: %s", exc)
+
+        with self._lock:
+            snapshot = list(self._unread.items())
+            kinds = dict(self._chat_kinds)
         result = []
-        for n, c in self._unread.items():
-            if c <= 0:
-                continue
-            kind = self._chat_kinds.get(n, "personal")
-            if kind != "personal":
-                continue
-            result.append(UnreadChat(name=n, count=c))
-            if len(result) >= max_chats:
-                break
+        for name, count in snapshot:
+            if count > 0 and kinds.get(name, "personal") == "personal":
+                result.append(UnreadChat(name=name, count=count))
+                if len(result) >= max_chats:
+                    break
         return result
 
     def get_unread_messages(self, chat_name: str, count: int = 10) -> List[MessageInfo]:
@@ -358,7 +377,8 @@ class WebSocketBackend(BaseBackend):
         kind = self._chat_kinds.get(chat_name) or self._engine.chat_kind(chat_name)
         if kind and kind != "personal":
             logger.debug("skip non-personal unread pull: %s (%s)", chat_name, kind)
-            self._unread.pop(chat_name, None)
+            with self._lock:
+                self._unread.pop(chat_name, None)
             return []
         try:
             items = self._engine.get_messages(
@@ -381,7 +401,8 @@ class WebSocketBackend(BaseBackend):
                     message_id=str(item.get("id") or ""),
                 )
             )
-        self._unread.pop(chat_name, None)
+        with self._lock:
+            self._unread.pop(chat_name, None)
         try:
             self._engine.mark_read(chat_name)
         except Exception:
@@ -437,7 +458,7 @@ class WebSocketBackend(BaseBackend):
         assert self._engine is not None
         try:
             rt = int(reply_to) if reply_to not in (None, "") else None
-            info = self._engine.send_file(
+            self._engine.send_file(
                 chat_name,
                 path,
                 caption=caption,
@@ -508,8 +529,9 @@ class WebSocketBackend(BaseBackend):
         return self._engine.add_contact(phone, first_name, last_name)
 
     def search_contacts(self, query: str) -> List[str]:
-        q = query.strip().lower()
-        return [n for n in self.get_contacts() if q in n.lower()]
+        self._ensure_ready()
+        assert self._engine is not None
+        return [item["name"] for item in self._engine.search_contacts(query)]
 
     def block_user(self, user: str) -> bool:
         self._ensure_ready()
@@ -587,7 +609,11 @@ class WebSocketBackend(BaseBackend):
 
     def delete_session(self) -> bool:
         if self._engine:
-            return self._engine.delete_session()
+            engine = self._engine
+            engine.disconnect()
+            self._logged_in = False
+            self._engine = None
+            return engine.delete_session()
         eng = MtprotoEngine(phone=self._phone, session_dir=self._session_dir)
         return eng.delete_session()
 

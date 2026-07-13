@@ -47,6 +47,8 @@ class LoopRunner:
         self._ready = threading.Event()
         self._stopped = False
         self._thread_id: Optional[int] = None
+        self._state_lock = threading.RLock()
+        self._atexit_registered = False
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop:
@@ -71,19 +73,22 @@ class LoopRunner:
         )
 
     def start(self) -> None:
-        if self.is_running:
-            return
-        self._stopped = False
-        self._ready.clear()
-        self._thread = threading.Thread(
-            target=self._run_forever,
-            name=self._name,
-            daemon=True,
-        )
-        self._thread.start()
+        with self._state_lock:
+            if self.is_running:
+                return
+            self._stopped = False
+            self._ready.clear()
+            self._thread = threading.Thread(
+                target=self._run_forever,
+                name=self._name,
+                daemon=True,
+            )
+            self._thread.start()
         if not self._ready.wait(timeout=10):
             raise RuntimeError("Failed to start asyncio loop thread")
-        atexit.register(self.stop)
+        if not self._atexit_registered:
+            atexit.register(self.stop)
+            self._atexit_registered = True
 
     def _run_forever(self) -> None:
         loop = asyncio.new_event_loop()
@@ -198,25 +203,41 @@ class LoopRunner:
         self._loop.call_soon_threadsafe(callback, *args)
 
     def stop(self, timeout: float = 8.0) -> None:
-        if self._stopped:
-            return
-        self._stopped = True
-        loop = self._loop
-        thread = self._thread
+        with self._state_lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            loop = self._loop
+            thread = self._thread
+
         if loop is not None and thread is not None and thread.is_alive():
-            # Cancel pending tasks first so disconnect can finish cleanly
             def _cancel_and_stop() -> None:
+                current = asyncio.current_task(loop=loop)
                 try:
                     for task in asyncio.all_tasks(loop):
-                        if not task.done():
+                        if task is not current and not task.done():
                             task.cancel()
                 except Exception:
                     pass
                 loop.stop()
 
-            loop.call_soon_threadsafe(_cancel_and_stop)
+            if self.in_loop_thread():
+                # Never join the current thread. The loop exits after the
+                # currently executing callback/coroutine yields control.
+                _cancel_and_stop()
+                return
+
+            try:
+                loop.call_soon_threadsafe(_cancel_and_stop)
+            except RuntimeError:
+                pass  # loop already closed
             thread.join(timeout=timeout)
-        self._thread = None
-        self._loop = None
-        self._thread_id = None
+            if thread.is_alive():
+                logger.warning("LoopRunner thread did not stop within %.1fs", timeout)
+                return
+
+        with self._state_lock:
+            self._thread = None
+            self._loop = None
+            self._thread_id = None
         logger.debug("LoopRunner stopped")

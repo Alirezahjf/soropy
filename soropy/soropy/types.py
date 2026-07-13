@@ -6,7 +6,7 @@ __repr__, __eq__, etc. for free.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict
+from typing import List, Dict
 from enum import Enum
 
 
@@ -58,7 +58,7 @@ class MessageInfo:
     text: str
     element_index: int = 0
     is_outgoing: bool = False
-    message_id: str = ""          # hash-based unique ID
+    message_id: str = ""          # backend message ID (or hash fallback)
 
     def __str__(self):
         direction = "→" if self.is_outgoing else "←"
@@ -115,4 +115,7 @@ class ChatCollection:
 
     @property
     def total_count(self) -> int:
-        return len(self.all) + len(self.personal) + len(self.groups) + len(self.channels)
+        # ``all`` already contains every categorised chat; never double-count.
+        return len(self.all) if self.all else (
+            len(self.personal) + len(self.groups) + len(self.channels)
+        )

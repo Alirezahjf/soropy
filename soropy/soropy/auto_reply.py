@@ -158,6 +158,7 @@ class AutoReplyEngine:
         chat_name: str,
         msg_index: int = 1,
         skip_duplicate_check: bool = False,
+        message_id: str = "",
     ) -> Optional[str]:
         """
         Determine the reply for *message_text* from *chat_name*.
@@ -173,7 +174,9 @@ class AutoReplyEngine:
         text = (message_text or "").strip()
         if not text:
             # Empty text: only reply if default is set (poll fallback path)
-            if not skip_duplicate_check and self._tracker.is_replied(chat_name, ""):
+            if not skip_duplicate_check and self._tracker.is_replied(
+                chat_name, "", message_id=message_id
+            ):
                 return None
             if self._default_reply:
                 return self._default_reply
@@ -182,8 +185,12 @@ class AutoReplyEngine:
             return None
 
         # Duplicate check
-        if not skip_duplicate_check and self._tracker.is_replied(chat_name, text):
-            logger.debug("Duplicate detected, skipping: %s / %s", chat_name, text[:30])
+        if not skip_duplicate_check and self._tracker.is_replied(
+            chat_name, text, message_id=message_id
+        ):
+            logger.debug(
+                "Duplicate detected, skipping: %s / %s", chat_name, message_id or text[:30]
+            )
             return None
 
         # Match rules
@@ -202,9 +209,19 @@ class AutoReplyEngine:
 
         return None
 
-    def mark_replied(self, chat_name: str, message_text: str) -> None:
-        """Record that we replied to this message (prevents duplicates)."""
-        self._tracker.mark_replied(chat_name, message_text)
+    def mark_replied(
+        self, chat_name: str, message_text: str, message_id: str = ""
+    ) -> None:
+        """Reserve a message ID (or text fallback) before delivery."""
+        self._tracker.mark_replied(chat_name, message_text, message_id=message_id)
+
+    def unmark_replied(
+        self, chat_name: str, message_text: str, message_id: str = ""
+    ) -> bool:
+        """Release a reservation when delivery genuinely failed."""
+        return self._tracker.unmark_replied(
+            chat_name, message_text, message_id=message_id
+        )
 
     # ── Tracker access ─────────────────────────────────
 

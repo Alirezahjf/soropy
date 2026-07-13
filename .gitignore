@@ -15,3 +15,7 @@ ws_capture.json
 *.log
 manager_config.json
 rules_export.json
+soropy_tracker.json
+soropy_tracker.json.tmp
+*_tracker.json
+*_tracker.json.tmp

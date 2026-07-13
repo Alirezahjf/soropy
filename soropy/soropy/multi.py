@@ -7,7 +7,7 @@ import threading
 from typing import Dict, Optional, Callable, List
 
 from soropy.client import SoroushClient
-from soropy.types import LoginStatus, ChatCollection, SendResult
+from soropy.types import LoginStatus
 from soropy.utils import get_logger, normalize_phone
 from soropy.exceptions import SoroPyError
 
@@ -31,13 +31,20 @@ class MultiAccountManager:
     def __init__(
         self,
         headless: bool = False,
-        session_dir: str = "soropy_sessions",
+        session_dir: Optional[str] = None,
         backend: str = "selenium",
         **client_kwargs,
     ):
         self._headless = headless
-        self._session_dir = session_dir
         self._backend = backend
+        if session_dir is None:
+            key = (backend or "selenium").strip().lower()
+            session_dir = (
+                "soropy_ws_sessions"
+                if key in ("websocket", "ws", "splus", "protocol")
+                else "soropy_sessions"
+            )
+        self._session_dir = session_dir
         self._client_kwargs = client_kwargs
         self._clients: Dict[str, SoroushClient] = {}
         self._lock = threading.Lock()
@@ -123,7 +130,8 @@ class MultiAccountManager:
             if code_callback_factory:
                 cb = code_callback_factory(phone)
             else:
-                cb = lambda: input(f"🔑 Code for {phone}: ")
+                def cb() -> str:
+                    return input(f"🔑 Code for {phone}: ")
             try:
                 status = client.login(code_callback=cb)
             except Exception as e:

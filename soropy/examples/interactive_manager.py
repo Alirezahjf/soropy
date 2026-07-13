@@ -21,7 +21,6 @@ import os
 import sys
 import threading
 import time
-import traceback
 from typing import Any, Dict, List, Optional
 
 # Allow running without install (repo root or examples/)
@@ -46,7 +45,7 @@ try:
 except ImportError as exc:
     print("❌ نصب soropy لازم است:")
     print('   pip install -e "./soropy[ws]"')
-    print("   یا: pip install \"soropy[ws] @ git+https://github.com/Alirezahjf/soropy.git@arena/019f5686-soropy#subdirectory=soropy\"")
+    print("   یا: pip install \"soropy[ws] @ git+https://github.com/Alirezahjf/soropy.git@arena/019f56cc-soropy#subdirectory=soropy\"")
     print(f"   جزئیات: {exc}")
     sys.exit(1)
 
@@ -77,6 +76,11 @@ def pause(msg: str = "Enter برای ادامه...") -> None:
         input(f"\n  {msg}")
     except EOFError:
         pass
+
+
+def clean_path(value: str) -> str:
+    """Accept quoted Windows paths with spaces and Persian characters."""
+    return os.path.expanduser(str(value or "").strip().strip('"').strip("'"))
 
 
 def banner() -> None:
@@ -131,7 +135,6 @@ class ManagerApp:
             return None
         except Exception as exc:
             print(f"  ❌ خطا: {exc}")
-            traceback.print_exc()
             return None
 
     def _need_client(self) -> bool:
@@ -227,8 +230,13 @@ class ManagerApp:
         except Exception:
             pass
 
+        def read_code_on_menu_thread() -> str:
+            # In SoroPy >=1.3.1 this callback is invoked by the caller/menu
+            # thread, never by the WebSocket asyncio loop.
+            return input("  🔑 کد پیامک‌شده: ").strip()
+
         try:
-            status = self.client.login()
+            status = self.client.login(code_callback=read_code_on_menu_thread)
             print(f"  ✅ لاگین: {status.value if hasattr(status, 'value') else status}")
         except LoginError as exc:
             print(f"  ❌ لاگین ناموفق: {exc}")
@@ -240,7 +248,6 @@ class ManagerApp:
             return
         except Exception as exc:
             print(f"  ❌ {exc}")
-            traceback.print_exc()
             try:
                 if self.client:
                     self.client.close()
@@ -341,12 +348,18 @@ class ManagerApp:
             print(f"  → {r}")
         elif choice == "4":
             chat = input("  چت: ").strip()
-            path = input("  مسیر فایل: ").strip()
+            path = clean_path(input("  مسیر فایل (می‌تواند داخل کوتیشن باشد): "))
+            if not os.path.isfile(path):
+                print(f"  ❌ فایل پیدا نشد: {path}")
+                print("  مسیر کامل ویندوز را Paste کنید؛ فاصله و نام فارسی پشتیبانی می‌شود.")
+                return
+            size_mb = os.path.getsize(path) / (1024 * 1024)
+            print(f"  فایل: {os.path.basename(path)} | اندازه: {size_mb:.2f} MB")
             cap = input("  کپشن: ").strip()
-            r = self._safe_call(
-                self.client.send_file, chat, path, caption=cap
-            )
+            r = self._safe_call(self.client.send_file, chat, path, caption=cap)
             print(f"  → {r}")
+            if getattr(r, "success", True) is False:
+                print("  اگر خطای 422 دیدید، نسخه 1.3.3 یک reconnect و retry خودکار انجام می‌دهد.")
         elif choice == "5":
             g = input("  گروه: ").strip()
             text = input("  متن: ").strip()
@@ -411,7 +424,7 @@ class ManagerApp:
             for k, v in rules.items():
                 print(f"    «{k}» → «{v}»")
         elif choice == "5":
-            path = input("  مسیر JSON: ").strip()
+            path = clean_path(input("  مسیر JSON: "))
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -424,7 +437,7 @@ class ManagerApp:
             except Exception as exc:
                 print(f"  ❌ {exc}")
         elif choice == "6":
-            path = input("  مسیر خروجی: ").strip() or "rules_export.json"
+            path = clean_path(input("  مسیر خروجی: ")) or "rules_export.json"
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(rules, f, ensure_ascii=False, indent=2)
@@ -530,7 +543,8 @@ class ManagerApp:
         elif choice == "6":
             raw = input("  interval ثانیه (حداقل ۱۲۰ برای WS): ").strip()
             try:
-                self.cfg["monitor_interval"] = max(10, int(raw))
+                floor = 120 if (self.cfg.get("backend") or "websocket") == "websocket" else 10
+                self.cfg["monitor_interval"] = max(floor, int(raw))
                 save_config(self.cfg)
                 print(f"  interval = {self.cfg['monitor_interval']}")
             except ValueError:
@@ -574,16 +588,27 @@ class ManagerApp:
                 print(f"    • {n}")
             print(f"  تعداد: {len(names)}")
         elif choice == "2":
-            phone = input("  شماره: ").strip()
+            phone = input("  شماره موبایل واقعی ۱۱ رقمی (مثال 09123456789): ").strip()
+            from soropy.utils import validate_phone
+            try:
+                validate_phone(phone)
+            except ValueError as exc:
+                print(f"  ❌ {exc}")
+                return
             first = input("  نام: ").strip()
             last = input("  نام‌خانوادگی: ").strip()
             ok = self._safe_call(self.client.add_contact, phone, first, last)
-            print(f"  → {ok}")
+            if ok:
+                print("  ✅ مخاطب اضافه شد.")
+            else:
+                print("  ❌ مخاطب اضافه نشد؛ شماره باید معتبر و عضو سروش‌پلاس باشد.")
         elif choice == "3":
-            q = input("  جستجو: ").strip()
+            q = input("  نام، username یا شماره برای جستجو: ").strip()
             r = self._safe_call(self.client.search_contacts, q) or []
-            for n in r:
-                print(f"    • {n}")
+            if not r:
+                print("  نتیجه‌ای پیدا نشد. املای نام/username یا شماره را بررسی کنید.")
+            for name in r:
+                print(f"    • {name}")
 
     # ── 9. moderation ──────────────────────────────────
 
@@ -682,7 +707,7 @@ class ManagerApp:
             print("  →", self._safe_call(self.client.unpin_message, chat, mid))
         elif choice == "5":
             mid = input("  message_id: ").strip()
-            path = input("  مسیر ذخیره (اختیاری): ").strip() or None
+            path = clean_path(input("  مسیر ذخیره (اختیاری): ")) or None
             print(
                 "  →",
                 self._safe_call(self.client.download_media, chat, mid, path),
@@ -708,7 +733,7 @@ class ManagerApp:
             print(f"  ❌ {exc}")
 
         # phone validation
-        from soropy.utils import is_valid_iranian_mobile, validate_phone
+        from soropy.utils import is_valid_iranian_mobile
         for sample, expect in (
             ("09123456789", True),
             ("0912xxxxxxx", False),
@@ -814,7 +839,6 @@ class ManagerApp:
                     print("\n  (لغو)")
                 except Exception as exc:
                     print(f"  ❌ {exc}")
-                    traceback.print_exc()
                 pause()
             else:
                 print("  گزینه نامعتبر")

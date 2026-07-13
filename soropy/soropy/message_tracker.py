@@ -1,16 +1,16 @@
 """
 Message tracker – prevents duplicate replies.
 
-Stores hashes of (chat_name, message_text) pairs that have
-already been replied to.  Persists to a JSON file so restarts
-do not cause re-replies.
+Stores hashes of (chat_name, message_id) when an ID is available, with
+(chat_name, message_text) as a compatibility fallback. Persists to JSON so
+restarts do not cause duplicate replies.
 """
 
 import json
 import os
 import time
 import threading
-from typing import Set, Optional
+
 
 from soropy.utils import hash_message, get_logger
 
@@ -40,15 +40,20 @@ class MessageTracker:
 
     # ── public API ─────────────────────────────────────
 
-    def is_replied(self, chat_name: str, text: str) -> bool:
-        """Return True if this exact message was already replied to."""
-        h = hash_message(chat_name, text)
+    @staticmethod
+    def _key(chat_name: str, text: str, message_id: str = "") -> str:
+        identity = f"message-id:{message_id}" if message_id else text
+        return hash_message(chat_name, identity)
+
+    def is_replied(self, chat_name: str, text: str, message_id: str = "") -> bool:
+        """Return True for this message ID, falling back to its text."""
+        h = self._key(chat_name, text, str(message_id or ""))
         with self._lock:
             return h in self._replied
 
-    def mark_replied(self, chat_name: str, text: str) -> None:
-        """Record that we replied to this message."""
-        h = hash_message(chat_name, text)
+    def mark_replied(self, chat_name: str, text: str, message_id: str = "") -> None:
+        """Record that a message was reserved/delivered."""
+        h = self._key(chat_name, text, str(message_id or ""))
         with self._lock:
             self._replied[h] = time.time()
             self._save()
@@ -60,6 +65,17 @@ class MessageTracker:
                 h = hash_message(chat_name, text)
                 self._replied[h] = time.time()
             self._save()
+
+    def unmark_replied(
+        self, chat_name: str, text: str, message_id: str = ""
+    ) -> bool:
+        """Release a reservation after a real delivery failure."""
+        h = self._key(chat_name, text, str(message_id or ""))
+        with self._lock:
+            existed = self._replied.pop(h, None) is not None
+            if existed:
+                self._save()
+            return existed
 
     def prune(self) -> int:
         """Remove entries older than max_age.  Returns count removed."""
@@ -105,7 +121,14 @@ class MessageTracker:
 
     def _save(self) -> None:
         try:
-            with open(self._db_path, "w", encoding="utf-8") as f:
+            parent = os.path.dirname(self._db_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            tmp = self._db_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._replied, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._db_path)
         except Exception as e:
             logger.warning("Failed to save tracker DB: %s", e)

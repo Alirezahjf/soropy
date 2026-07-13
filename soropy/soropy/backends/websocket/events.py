@@ -5,9 +5,10 @@ Event bus and standard event names for the WebSocket backend.
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from soropy.backends.base import BackendEvent, EventHandler
 from soropy.utils import get_logger
@@ -93,6 +94,11 @@ class EventBus:
     def __init__(self) -> None:
         self._handlers: Dict[str, List[EventHandler]] = {}
         self._lock = threading.RLock()
+        self._executor = ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="soropy-event",
+        )
+        self._closed = False
 
     def on(self, event: str, handler: EventHandler) -> None:
         key = event.value if isinstance(event, SplusEvent) else str(event)
@@ -133,9 +139,30 @@ class EventBus:
             except Exception as exc:  # never break the bus
                 logger.error("Event handler error on '%s': %s", key, exc)
 
+    def emit_async(self, event: str, data: Optional[Dict[str, Any]] = None) -> None:
+        """Dispatch off the MTProto loop so slow user handlers cannot block ping/recv."""
+        with self._lock:
+            if self._closed:
+                return
+        try:
+            self._executor.submit(self.emit, event, data)
+        except RuntimeError:
+            pass  # executor is shutting down
+
     def clear(self) -> None:
         with self._lock:
             self._handlers.clear()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._handlers.clear()
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # Python 3.8
+            self._executor.shutdown(wait=False)
 
     def listener_count(self, event: Optional[str] = None) -> int:
         with self._lock:
