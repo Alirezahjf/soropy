@@ -1,304 +1,407 @@
-# SoroPy 🚀
+# SoroPy 1.3.3 🚀
 
-**حرفه‌ای‌ترین کتابخانه پایتون برای سروش پلاس** — نسخه **1.3.0**
+کتابخانهٔ پایتون برای کار با **سروش‌پلاس** با یک API عمومی و دو backend مستقل:
+
+- **Selenium**: کنترل رابط وب با Chrome؛ backend پیش‌فرض و مناسب اتوماسیون UI.
+- **WebSocket / MTProto**: ارتباط realtime و بدون Chrome از طریق SPlusthon.
 
 [![PyPI](https://img.shields.io/pypi/v/soropy)](https://pypi.org/project/soropy/)
 [![Python](https://img.shields.io/pypi/pyversions/soropy)](https://pypi.org/project/soropy/)
-[![License](https://img.shields.io/pypi/l/soropy)](https://opensource.org/licenses/MIT)
+[![License](https://img.shields.io/badge/core-MIT-blue.svg)](https://github.com/Alirezahjf/soropy/blob/main/soropy/LICENSE)
+
+> [!IMPORTANT]
+> backend وب‌سوکت از API رسمی عمومی استفاده نمی‌کند؛ SPlusthon یک کلاینت شخص ثالث MTProto است. قوانین و محدودیت‌های سروش‌پلاس را رعایت کنید و قبل از استفادهٔ عملی، حساب آزمایشی و نرخ ارسال محافظه‌کارانه داشته باشید.
 
 ---
 
-## ✨ امکانات
-
-| قابلیت | توضیح |
-|--------|-------|
-| 🔐 **لاگین خودکار** | ورود با شماره + کد تأیید، ذخیره سشن |
-| 💬 **استخراج چت‌ها** | لیست همه / شخصی / گروه / کانال |
-| 📨 **ارسال پیام** | تکی، ریپلای، دسته‌ای، گروه، کانال |
-| 📎 **ارسال فایل / مدیا** | `send_file` / `download_media` (WS) |
-| 🛠️ **ابزار پیام** | حذف، ادیت، پین / آن‌پین (WS) |
-| 📇 **مخاطبین** | مشاهده، اضافه، جستجو، بلاک / آن‌بلاک |
-| 🛡️ **مودریشن** | kick / ban / unban / promote / permissions (WS) |
-| 🤖 **پاسخ خودکار** | قوانین + default_reply + ضدتکرار — **فقط PV** |
-| 👁️ **مانیتور** | poll ایمنی + push لحظه‌ای روی WS |
-| 👥 **چند اکانت** | `MultiAccountManager` |
-| 🔌 **دو Backend** | Selenium (UI) و WebSocket/MTProto |
-| 🖥️ **منوی تعاملی** | `python interactive_manager.py` |
-
-### جدول مقایسه Backend
+## مقایسهٔ backendها
 
 | قابلیت | Selenium | WebSocket / MTProto |
-|--------|:--------:|:-------------------:|
-| `login` + سشن | ✅ Chrome profile | ✅ SQLite session |
-| `send_message` / bulk | ✅ | ✅ |
-| `get_chats` (personal/group/channel) | ✅ | ✅ |
-| `on("new_message")` realtime | ❌ | ✅ |
-| auto-reply فقط PV | ✅ poll | ✅ push + poll |
+|---|:---:|:---:|
+| `login` با شماره و کد | ✅ رابط وب | ✅ SMS / session |
+| ذخیرهٔ session | Chrome profile | SQLite auth key |
+| `send_message` و bulk | ✅ | ✅ |
+| `reply` | محدود به DOM | ✅ با message ID |
+| گروه و کانال | ✅ | ✅ |
+| دریافت realtime با `new_message` | ❌ | ✅ |
+| auto-reply | poll | push + poll ایمنی |
+| auto-reply فقط PV به‌صورت پیش‌فرض | ✅ | ✅ |
 | `send_file` / `download_media` | ❌ | ✅ |
-| `reply` / `edit` / `delete` / `pin` | محدود UI | ✅ |
-| `kick` / `ban` / `promote` / … | ❌ | ✅ |
-| `block_user` / `report` | ❌ | ✅ |
-| بدون Chrome | ❌ | ✅ |
-| headless | ✅ | ✅ (همیشه) |
+| حذف، ویرایش، pin و unpin | ❌ | ✅ |
+| مخاطبین | ✅ | ✅ |
+| block / unblock / report | ❌ | ✅ |
+| kick / ban / promote / permissions | ❌ | ✅؛ نیازمند دسترسی ادمین |
+| چند اکانت | ✅؛ یک Chrome برای هر حساب | ✅؛ یک loop/session برای هر حساب |
+| اجرای بدون Chrome | ❌ | ✅ |
+| `headless` | ✅ | ذاتاً بدون UI |
+
+Selenium همچنان backend پیش‌فرض است؛ کدهای قبلی بدون تعیین `backend` تغییر رفتار نمی‌دهند.
 
 ---
 
-## 📦 نصب
+## نصب
 
 ### از PyPI
 
 ```bash
+# هسته و Selenium
 pip install soropy
-pip install "soropy[ws]"   # برای backend وب‌سوکت (SPlusthon)
+
+# قابلیت‌های WebSocket / MTProto
+pip install "soropy[ws]"
 ```
 
-### از GitHub (برنچ توسعه)
+extra وب‌سوکت شامل `SPlusthon`, `aiohttp`, `pyaes` و `rsa` است. در نسخهٔ 1.3.3 بازهٔ شناخته‌شدهٔ پایدار SPlusthon یعنی `>=1.1.2,<1.1.3` استفاده می‌شود؛ 1.1.2 مشکل session مشترک چند اکانت را رفع کرده و 1.1.3 به‌دلیل regression در reconnect دوره‌ای فعلاً کنار گذاشته شده است.
 
-> ⚠️ آدرس باید **بدون** `/tree/` باشد. از `#subdirectory=soropy` استفاده کنید.
+### نصب مستقیم از branch این PR
+
+آدرس Git باید **بدون `/tree/`** و همراه `#subdirectory=soropy` باشد:
 
 ```bash
 pip uninstall soropy -y
-
-# آخرین برنچ این سشن Arena:
-pip install "soropy[ws] @ git+https://github.com/Alirezahjf/soropy.git@arena/019f5686-soropy#subdirectory=soropy"
-
-# یا برنچ قبلی:
-# pip install "soropy[ws] @ git+https://github.com/Alirezahjf/soropy.git@arena/019f5612-soropy#subdirectory=soropy"
+pip install "soropy[ws] @ git+https://github.com/Alirezahjf/soropy.git@arena/019f56cc-soropy#subdirectory=soropy"
+python -c "import soropy; print(soropy.__version__)"
+# 1.3.3
 ```
 
 ### پیش‌نیازها
 
 - Python 3.8+
-- **Selenium:** Google Chrome / Chromium + ChromeDriver
-- **WebSocket:** فقط `pip install soropy[ws]` (بدون Chrome)
-
-### extras `ws`
-
-```
-splusthon>=1.1.0
-aiohttp>=3.8.0
-pyaes>=1.6.1
-rsa>=4.0
-```
+- Selenium: Chrome/Chromium و ChromeDriver سازگار
+- WebSocket: دسترسی شبکه به `im-server.splus.ir:443`؛ Chrome لازم نیست
 
 ---
 
-## 🚀 شروع سریع
-
-### Selenium (پیش‌فرض)
+## شروع سریع Selenium
 
 ```python
 from soropy import SoroushClient
 
-client = SoroushClient("09123456789")   # backend="selenium"
-client.login()
-client.send_message("علی", "سلام!")
-chats = client.get_chats()
-print(chats.total_count)
-client.close()
+with SoroushClient("09123456789", backend="selenium", headless=True) as client:
+    status = client.login()
+    chats = client.get_chats()
+    print(chats.personal[:10])
+    result = client.send_message("علی", "سلام از Selenium")
+    print(result)
 ```
 
-### WebSocket / MTProto (realtime)
+### مسیر Chrome در ویندوز
+
+```python
+client = SoroushClient(
+    "09123456789",
+    backend="selenium",
+    headless=False,
+    chrome_binary=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    chromedriver_path=r"C:\tools\chromedriver.exe",
+    extra_chrome_args=["--window-size=1280,900"],
+)
+client.login()
+```
+
+---
+
+## WebSocket / MTProto realtime
 
 ```python
 from soropy import SoroushClient
 
-client = SoroushClient("09123456789", backend="websocket")
+client = SoroushClient(
+    "09123456789",
+    backend="websocket",
+    auto_reply_private_only=True,  # پیش‌فرض امن
+)
 
-def on_msg(event):
-    d = event.data
-    # message_id, chat_id, chat_name, text, sender_id, sender_name,
-    # is_outgoing, is_private, is_group, is_channel, timestamp, reply_to_id
-    print(d["chat_name"], d["text"], "PV" if d.get("is_private") else "other")
+def on_message(event):
+    data = event.data
+    print(
+        data["chat_name"],
+        data["text"],
+        "PV" if data["is_private"] else "group/channel",
+    )
 
-client.on("new_message", on_msg)
-client.login()                       # SMS بار اول؛ بعد سشن SQLite
-client.send_message("علی", "سلام از MTProto!")
-client.close()
+client.on("new_message", on_message)
+status = client.login()  # کد فقط بار اول؛ سپس SQLite session
+print(status)
+
+client.send_message("علی", "سلام از MTProto")
+client.close()  # همیشه منابع aiohttp و loop را ببندید
 ```
 
-پروتکل واقعی: **MTProto** روی `wss://im-server.splus.ir:443/apiws`  
-جزئیات: [`docs/WEBSOCKET_ARCHITECTURE.md`](docs/WEBSOCKET_ARCHITECTURE.md)
+payload نرمال‌شدهٔ `new_message`:
+
+```text
+message_id, chat_id, chat_name, text,
+sender_id, sender_name,
+is_outgoing, is_private, is_group, is_channel,
+timestamp, reply_to_id
+```
+
+handlerهای کاربر خارج از thread دریافت MTProto اجرا می‌شوند تا callback کند، ping/recv وب‌سوکت را مسدود نکند.
 
 ---
 
-## 📎 فایل، گروه، کانال، ریپلای
+## پیام، فایل، گروه و کانال
 
 ```python
-client = SoroushClient("09123456789", backend="websocket")
-client.login()
-
-client.send_message("علی", "سلام")
-client.reply("علی", message_id=12345, text="در پاسخ...")
+client.send_message("علی", "پیام معمولی")
+client.reply("علی", message_id=12345, text="پاسخ به پیام")
+client.send_bulk_messages(["علی", "رضا"], "پیام گروهی", delay=3)
 client.send_to_group("گروه خانواده", "سلام گروه")
-client.send_to_channel("@my_channel", "پست کانال")  # نیاز ادمین
+client.send_to_channel("@my_channel", "پست کانال")  # دسترسی ارسال لازم است
 
+# مسیر فارسی، فاصله و کوتیشن ویندوز پشتیبانی می‌شود.
+client.send_file(
+    "علی",
+    r"C:\Users\me\Downloads\نحو مقدماتی- حمید محمدی.docx",
+    caption="فایل آموزشی",
+)
 client.send_file("علی", "photo.jpg", caption="عکس", force_document=False)
-path = client.download_media("علی", message_id=12345, file_path="out.bin")
 
+path = client.download_media("علی", message_id=12345, file_path="downloads/file.bin")
 client.edit_message("علی", 12345, "متن ویرایش‌شده")
 client.delete_messages("علی", [12345, 12346], revoke=True)
 client.pin_message("علی", 12345, notify=False)
+client.unpin_message("علی", 12345)
 client.unpin_message("علی")  # همه
 ```
 
+در آپلود فایل:
+
+- فایل ابتدا در `BytesIO` با نام ASCII-safe قرار می‌گیرد؛ extension حفظ می‌شود.
+- فایل غیرتصویری به‌صورت document ارسال می‌شود.
+- اندازهٔ part برابر 512 KiB و timeout برابر 300 ثانیه است.
+- خطای `FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER` / RPC 422 یک‌بار reconnect و retry می‌شود.
+
 ---
 
-## 🛡️ مودریشن / بلاک / ریپورت
+## مخاطبین و عملیات کاربر
 
 ```python
-client.kick("گروه من", "user_or_id")
-client.ban("گروه من", "user_or_id")
-client.unban("گروه من", "user_or_id")
-client.promote("گروه من", "user_or_id", delete_messages=True, ban_users=True)
-client.set_permissions("گروه من", "user_or_id", send_messages=False)
-client.get_participants("گروه من", limit=100)
-client.get_permissions("گروه من")
+contacts = client.get_contacts()
+results = client.search_contacts("baba")  # local + contacts.SearchRequest
 
-client.block_user("اسپمر")
-client.unblock_user("اسپمر")
-client.report("اسپمر", reason="spam", message="")  # spam|violence|porn|copyright|other
+ok = client.add_contact("09123456789", "علی", "احمدی")
+if not ok:
+    print("شماره معتبر نیست، عضو سروش نیست یا import توسط سرور رد شده است")
+
+client.block_user("@spam_user")
+client.unblock_user("@spam_user")
+client.report("@spam_user", reason="spam", message="پیام مزاحم")
 ```
 
-> همهٔ این متدها روی `backend="websocket"` پیاده شده‌اند. روی Selenium خطای واضح می‌گیرید.
+`add_contact` شماره را سخت‌گیرانه اعتبارسنجی و variantهای `989…`، `+989…` و `09…` را برای import ارسال می‌کند. شماره‌هایی با رقم کم/زیاد یا placeholder رد می‌شوند.
+
+reasonهای report: `spam`, `violence`, `porn`, `copyright`, `other`, `fake`, `child`, `geo`.
 
 ---
 
-## 🤖 پاسخ خودکار — فقط PV
+## مودریشن
 
-از نسخه **1.3.0** auto-reply (realtime و poll) **فقط چت شخصی** را هدف می‌گیرد  
-تا سیل خطای `CHAT_ADMIN_REQUIRED` روی کانال/گروه رخ ندهد.
+تمام متدهای زیر مخصوص backend وب‌سوکت و نیازمند permission مناسب هستند:
+
+```python
+client.kick("گروه من", "@user")
+client.ban("گروه من", "@user")
+client.unban("گروه من", "@user")
+client.set_permissions("گروه من", "@user", send_messages=False)
+client.promote(
+    "گروه من",
+    "@user",
+    title="پشتیبان",
+    delete_messages=True,
+    ban_users=True,
+    invite_users=True,
+)
+participants = client.get_participants("گروه من", limit=100)
+permissions = client.get_permissions("گروه من", "@user")
+```
+
+در 1.3.3 semantics مربوط به `ban` اصلاح شده است: API سطح بالای SPlusthon برای اعمال ban باید `view_messages=False` دریافت کند. همچنین `promote` فقط آرگومان‌های پشتیبانی‌شدهٔ `edit_admin` را ارسال می‌کند.
+
+> برای نام‌های تکراری از `@username` یا ID عددی استفاده کنید. resolver دیگر substring مبهم را انتخاب نمی‌کند تا پیام یا عملیات مدیریتی روی فرد اشتباه اجرا نشود.
+
+---
+
+## پاسخ خودکار امن و realtime
 
 ```python
 client = SoroushClient("09123456789", backend="websocket")
 client.login()
 
-client.add_reply_rule("سلام", "علیک سلام! 👋")
-client.set_default_reply("پیامت دریافت شد ✅")  # همان متن کاربر؛ نه «جواب N»
-# client.set_default_reply(None)  # خاموش کردن default
-
+client.add_reply_rule("سلام", "علیک سلام 👋")
+client.add_reply_rule("قیمت", "لطفاً با پشتیبانی تماس بگیرید")
+client.set_default_reply("پیامت دریافت شد ✅")
 client.set_auto_reply_enabled(True)
-client.set_private_only(True)   # پیش‌فرض True
+client.set_private_only(True)  # پیش‌فرض؛ گروه/کانال پاسخ نمی‌گیرند
 
-# realtime push جواب می‌دهد؛ monitor فقط safety-net (حداقل ~120s روی WS)
-client.start_monitor(interval=120)  # فقط PV، حداکثر ~۵ چت در هر cycle
+# realtime مسیر اصلی است؛ monitor فقط safety-net است.
+client.start_monitor(interval=120, blocking=True)
 ```
 
-- پیام‌های تکراری با `MessageTracker` ذخیره می‌شوند.
-- خطای admin به‌صورت soft-skip (لاگ debug) رد می‌شود، نه flood.
-- ارسال realtime **async** است تا WebSocket قطع نشود.
+رفتار مسیر realtime:
+
+1. فقط پیام ورودی با `is_private=True` یا kind قطعی `personal` پذیرفته می‌شود.
+2. `MessageTracker` قبل از queue شدن، ترجیحاً با `message_id`، رزرو می‌شود تا poll پاسخ تکراری ندهد؛ متن یکسان با ID جدید دوباره قابل پاسخ است.
+3. ارسال sync در daemon worker خارج از event loop انجام می‌شود.
+4. لاگ‌های `queued`، `delivered` و `failed` قابل مشاهده‌اند.
+5. در شکست واقعی رزرو آزاد می‌شود؛ خطاهای permission کانال/گروه soft-skip هستند.
+
+`default_reply` دقیقاً همان متن تنظیم‌شدهٔ کاربر است؛ fallback قدیمی «جواب N» به‌صورت پیش‌فرض خاموش است. poll وب‌سوکت حداقل فاصلهٔ 120 ثانیه و سقف 5 چت شخصی در هر cycle دارد.
 
 ---
 
-## 👥 چند اکانت
+## چند اکانت
 
 ```python
 from soropy import MultiAccountManager
 
-with MultiAccountManager(backend="websocket") as mgr:
-    mgr.add_account("09123456789")
-    mgr.add_account("09187654321")
-    mgr.login_all()
-    mgr.get_client("09123456789").send_message("علی", "سلام از اکانت ۱")
-    mgr.start_all_monitors(interval=120)
+with MultiAccountManager(backend="websocket") as manager:
+    manager.add_account("09123456789")
+    manager.add_account("09187654321")
+    manager.login_all(parallel=False)  # ورود تعاملی بهتر است ترتیبی باشد
+    manager.get_client("09123456789").send_message("علی", "سلام")
+    manager.start_all_monitors(interval=120)
 ```
 
+برای Selenium فقط backend را عوض کنید:
+
+```python
+manager = MultiAccountManager(backend="selenium", headless=True)
+```
+
+مسیر session پیش‌فرض مدیر نیز با backend هماهنگ می‌شود.
+
 ---
 
-## ⚡ رویدادها
+## رویدادها
 
-| Event | توضیح |
-|-------|--------|
-| `connecting` / `connected` / `disconnected` | چرخه اتصال |
-| `auth_success` / `auth_failed` | لاگین |
-| `new_message` | پیام ورودی (با فلگ‌های is_private/group/channel) |
-| `message_sent` | تأیید ارسال |
-| `chat_updated` / `unread_changed` | لیست و badge |
-| `error` | خطاهای transport |
+```python
+client.on("connected", handler)
+client.on("auth_success", handler)
+client.on("new_message", handler)
+client.on("message_sent", handler)
+client.on("chat_updated", handler)
+client.on("unread_changed", handler)
+client.on("error", handler)
+client.on("disconnected", handler)
+client.off("new_message", handler)
+```
 
-### سشن‌ها
-
-| Backend | مسیر | فرمت |
-|---------|------|------|
+| backend | مسیر session | محتوا |
+|---|---|---|
 | Selenium | `soropy_sessions/plus_98…/` | Chrome profile |
-| WebSocket | `soropy_ws_sessions/plus_98….session` | SQLite (auth key + DC) |
+| WebSocket | `soropy_ws_sessions/plus_98….session` | SQLite auth key + DC |
 
-حذف: `client.delete_session()`
+```python
+client.close()
+client.delete_session()  # برای auth key خراب؛ در صورت اتصال ابتدا transport بسته می‌شود
+```
+
+session، فایل tracker، تنظیمات manager و شمارهٔ واقعی را commit نکنید.
 
 ---
 
-## 🖥️ منوی تعاملی
+## منوی تعاملی فارسی
 
 ```bash
-git clone -b arena/019f5686-soropy https://github.com/Alirezahjf/soropy.git
+git clone -b arena/019f56cc-soropy https://github.com/Alirezahjf/soropy.git
 cd soropy
 pip install -e "./soropy[ws]"
 python interactive_manager.py
 ```
 
-منوی فارسی با ذخیره تنظیمات در `manager_config.json`:
+`manager_config.json` شماره، backend، قوانین و toggleها را محلی ذخیره می‌کند و در Git نادیده گرفته می‌شود.
 
-1. لاگین / اتصال (websocket پیش‌فرض)
-2. وضعیت + لیست قابلیت‌ها
-3. لیست چت‌ها (+ JSON)
-4. ارسال: متن / ریپلای / چندتایی / فایل
-5. قوانین auto-reply + toggleها
-6. سرویس‌ها: Listener / Monitor جدا
-7. حالت زنده (Live feed)
+منو شامل این بخش‌ها است:
+
+1. لاگین/اتصال با WebSocket پیش‌فرض یا Selenium
+2. وضعیت و capabilityها
+3. چت‌ها و export JSON
+4. متن، reply، bulk، فایل، گروه و کانال
+5. قوانین، default، import/export و toggleها
+6. Listener، Monitor، Auto-reply، PV-only و log مستقل
+7. Live feed
 8. مخاطبین
-9. مودریشن
-10. ابزار پیام
-11. تست سریع
-12. حذف سشن
-13. خروج از اکانت  
-0. خروج
+9. مودریشن، block و report
+10. حذف/ویرایش/pin/download
+11. smoke test
+12. حذف session
+13. خروج از حساب
 
-پیشنهاد تست واقعی: لاگین → قانون «سلام» → Listener روشن → Monitor خاموش → Live → جواب فقط PV بدون سیل `CHAT_ADMIN`.
-
----
-
-## 🏗️ معماری
-
-```
-SoroushClient (client.py)          ← API عمومی ثابت
-└── BaseBackend
-    ├── SeleniumBackend            ← پیش‌فرض (Chrome + DOM)
-    └── WebSocketBackend           ← MTProto روی WSS
-        ├── MtprotoEngine (SPlusthon)
-        ├── LoopRunner (create_task / بدون deadlock)
-        └── EventBus (new_message, …)
-
-AutoReplyEngine + MessageTracker   ← مشترک، فقط PV
-MultiAccountManager(backend=...)
-interactive_manager.py             ← CLI فارسی
-```
+callback کد SMS صریحاً روی thread منو اجرا می‌شود. مسیر فایل ویندوز از کوتیشن پاک، وجود فایل و اندازهٔ آن قبل از ارسال بررسی می‌شود.
 
 ---
 
-## 🔧 عیب‌یابی
+## عیب‌یابی
 
-| علامت | راه‌حل |
-|--------|--------|
-| `شماره نامعتبر` / `bytes or str expected, not NoneType` | شماره **واقعی** ۱۱ رقمی بدهید (`09123456789`). placeholder مثل `0912xxxxxxx` رد می‌شود. |
-| `CHAT_ADMIN_REQUIRED` سیل | auto-reply فقط PV است؛ Monitor را خاموش کنید یا interval را بالا ببرید. قوانین را روی کانال نزنید. |
-| `WebSocket closed` + Ping pending | نسخه 1.3.0 ارسال auto-reply را async کرده؛ `pip install` دوباره از برنچ. |
-| `Unclosed client session` | `client.close()` را صدا بزنید؛ disconnect تمیز aiohttp را می‌بندد. |
+| علامت | علت / راه‌حل |
+|---|---|
+| `0912xxxxxxx` یا شمارهٔ کوتاه/بلند | شمارهٔ واقعی 11 رقمی مثل `09123456789` بدهید. |
+| `The key is not registered` / `AuthKeyNotFound` | 1.3.3 یک‌بار session را خودکار reset می‌کند؛ در صورت تکرار `delete_session()` یا گزینهٔ 12 منو. |
+| `WebSocket closed`، pending SignIn/Ping زیاد | از 1.3.1 دریافت SMS/2FA خارج event loop است. نسخه را بررسی و session خراب را حذف کنید. |
+| `FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER` / 422 | از 1.3.2+ نام ASCII، document upload و یک reconnect/retry انجام می‌شود. |
+| auto-reply دیر یا بدون پاسخ | Rule/default، Auto-reply، Listener و PV-only را روشن کنید؛ لاگ `queued/delivered/failed` را ببینید. Monitor مسیر اصلی نیست. |
+| سیل `CHAT_ADMIN_REQUIRED` | PV-only را روشن نگه دارید؛ گروه و broadcast channel نباید auto-reply بگیرند. |
+| نام مشابه به فرد اشتباه resolve نمی‌شود | رفتار عمدی است؛ `@username` یا peer ID بدهید. |
+| `Unclosed client session` | حتماً `client.close()` یا context manager؛ 1.3.3 nested aiohttp sessionها را هم می‌بندد. |
 | `requires 'splusthon'` | `pip install "soropy[ws]"` |
-| `MTProto connect failed` | دسترسی به `im-server.splus.ir:443` (DNS/VPN/فایروال) |
-| سشن خراب | `client.delete_session()` سپس لاگین مجدد |
+| خطای اتصال به `im-server.splus.ir:443` | DNS، firewall، VPN/proxy و ساعت سیستم را بررسی کنید. |
+| متد WS روی Selenium | backend را `websocket` کنید؛ متد unsupported باید `SoroPyError` واضح بدهد. |
 
 ---
 
-## 📄 لایسنس
+## معماری
 
-- **هسته SoroPy (Selenium و API عمومی):** [MIT](soropy/LICENSE)
-- **اختیاری `soropy[ws]` + SPlusthon:** SPlusthon تحت **GPL-3.0** است؛ توزیع باینری ترکیبی مشمول تعهدات GPL می‌شود.  
-  اگر فقط Selenium می‌خواهید: `pip install soropy` بدون extra.
+```text
+SoroushClient (API عمومی sync)
+└── BaseBackend
+    ├── SeleniumBackend
+    │   └── Chrome + DOM managers
+    └── WebSocketBackend
+        ├── EventBus (dispatch خارج loop دریافت)
+        └── MtprotoEngine
+            ├── LoopRunner (asyncio thread)
+            └── SPlusthon
+                └── MTProto obfuscated abridged over WSS
+```
+
+endpoint واقعی: `wss://im-server.splus.ir:443/apiws`
+Origin: `https://web.splus.ir`
+API عمومی web client: `1030400 / 6edb16cf88714a4e9a805e928c39c937`
+
+فایل‌های legacy مربوط به JSON/raw WebSocket در tree باقی مانده‌اند اما مسیر production از آن‌ها استفاده نمی‌کند. جزئیات بیشتر در [WebSocket Architecture](https://github.com/Alirezahjf/soropy/blob/main/docs/WEBSOCKET_ARCHITECTURE.md).
 
 ---
 
-## 📬 ارتباط
+## smoke test توسعه‌دهنده
 
-[Telegram @mr_hjf](https://t.me/mr_hjf) · [GitHub Issues](https://github.com/Alirezahjf/soropy/issues)
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
+pip install -e "./soropy[ws]" pytest
+python -m compileall -q soropy/soropy interactive_manager.py
+pytest -q soropy/tests
+python -c "import soropy; print(soropy.__version__)"
+```
 
-ساخته شده با ❤️ — نسخه 1.3.0
+تست‌ها login callback خارج loop، مسیر Unicode، semantics مربوط به ban/promote، unread stale، EventBus، auto-reply reservation و deadlock guard را بدون نیاز به حساب واقعی پوشش می‌دهند. تست نهایی login/send/receive/upload باید با حساب آزمایشی واقعی انجام شود.
+
+---
+
+## لایسنس
+
+- هستهٔ SoroPy و backend Selenium: **MIT**
+- dependency اختیاری SPlusthon: **GPL-3.0**
+
+توزیع محصولی که dependency GPL را ترکیب می‌کند می‌تواند تعهدات GPL داشته باشد؛ پیش از توزیع تجاری بررسی حقوقی انجام دهید.
+
+---
+
+## ارتباط
+
+- Issues: https://github.com/Alirezahjf/soropy/issues
+- Repository: https://github.com/Alirezahjf/soropy
+
+ساخته‌شده با ❤️ — نسخهٔ **1.3.3**
