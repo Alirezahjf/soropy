@@ -11,8 +11,12 @@ expose a sync façade for :class:`WebSocketBackend`.
 
 from __future__ import annotations
 
+import io
+import inspect
 import os
+import re
 import time
+import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 from soropy.backends.websocket.events import IncomingMessage
@@ -163,6 +167,51 @@ def _is_admin_error(exc: BaseException) -> bool:
     )
 
 
+def _is_auth_key_error(exc: BaseException) -> bool:
+    """True for stale/unknown MTProto authorization-key failures."""
+    text = f"{type(exc).__name__}: {exc}".upper()
+    return any(
+        token in text
+        for token in (
+            "AUTHKEYNOTFOUND",
+            "AUTH_KEY_UNREGISTERED",
+            "AUTH KEY UNREGISTERED",
+            "KEY IS NOT REGISTERED",
+            "AUTH_KEY_INVALID",
+        )
+    )
+
+
+def _is_password_needed(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "sessionpasswordneeded" in text or "password is needed" in text
+
+
+def _is_upload_connection_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".upper()
+    return "FILE_REQUEST_RECEIVED_ON_CONNECTION" in text or "RPCERROR 422" in text
+
+
+def _ascii_upload_name(path: str) -> str:
+    """Return an ASCII-safe filename while preserving the original extension."""
+    original = os.path.basename(path) or "upload.bin"
+    stem, extension = os.path.splitext(original)
+    normalized = unicodedata.normalize("NFKD", stem)
+    stem_ascii = normalized.encode("ascii", "ignore").decode("ascii")
+    stem_ascii = re.sub(r"[^A-Za-z0-9._-]+", "_", stem_ascii).strip("._-")
+    extension_ascii = re.sub(r"[^A-Za-z0-9.]", "", extension).lower()
+    if not stem_ascii:
+        stem_ascii = "upload"
+    if not extension_ascii or extension_ascii == ".":
+        extension_ascii = ".bin"
+    return f"{stem_ascii}{extension_ascii}"
+
+
+_IMAGE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff",
+}
+
+
 class MtprotoEngine:
     """
     Sync wrapper around SPlusthon's async :class:`SoroushClient`.
@@ -206,10 +255,50 @@ class MtprotoEngine:
         self._client: Any = None
         self._connected = False
         self._authorized = False
-        # name → entity cache
+        # entity aliases → entity. Display names are removed when ambiguous.
         self._entity_cache: Dict[str, Any] = {}
-        # chat_id → kind cache
+        self._ambiguous_names = set()
+        # chat id/name → personal|group|channel
         self._kind_cache: Dict[str, str] = {}
+
+    def _remember_entity(
+        self,
+        name: str,
+        entity: Any,
+        kind: Optional[str] = None,
+        entity_id: Optional[str] = None,
+    ) -> None:
+        """Cache safe aliases without silently overwriting duplicate names."""
+        kind = kind or _entity_kind(entity)
+        intrinsic_id = str(getattr(entity, "id", "") or "")
+        raw_id = str(entity_id or intrinsic_id)
+        if raw_id:
+            self._entity_cache[raw_id] = entity
+            self._kind_cache[raw_id] = kind
+        if intrinsic_id and intrinsic_id != raw_id:
+            self._entity_cache[intrinsic_id] = entity
+            self._kind_cache[intrinsic_id] = kind
+        username = str(getattr(entity, "username", "") or "")
+        if username:
+            self._entity_cache["@" + username.lstrip("@")] = entity
+            self._kind_cache["@" + username.lstrip("@")] = kind
+        if not name:
+            return
+        previous = self._entity_cache.get(name)
+        previous_id = str(getattr(previous, "id", "") or "") if previous else ""
+        if (
+            previous is not None
+            and intrinsic_id
+            and previous_id
+            and previous_id != intrinsic_id
+        ):
+            self._entity_cache.pop(name, None)
+            self._kind_cache.pop(name, None)
+            self._ambiguous_names.add(name)
+            return
+        if name not in self._ambiguous_names:
+            self._entity_cache[name] = entity
+            self._kind_cache[name] = kind
 
     # ── paths ──────────────────────────────────────────
 
@@ -222,22 +311,41 @@ class MtprotoEngine:
         return os.path.isfile(base + ".session") or os.path.isfile(base)
 
     def delete_session(self) -> bool:
+        """Delete the SQLite session and all common sidecar files."""
         removed = False
         base = self._session_path()
-        for path in (base, base + ".session", base + ".session-journal"):
+        paths = (
+            base,
+            base + ".session",
+            base + ".session-journal",
+            base + ".session-wal",
+            base + ".session-shm",
+            base + "-journal",
+            base + "-wal",
+            base + "-shm",
+        )
+        for path in paths:
             if os.path.isfile(path):
                 try:
                     os.remove(path)
                     removed = True
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.warning("Cannot delete session file %s: %s", path, exc)
         return removed
 
     # ── lifecycle ──────────────────────────────────────
 
     @property
     def is_connected(self) -> bool:
-        return self._connected and self._client is not None
+        if not self._connected or self._client is None:
+            return False
+        checker = getattr(self._client, "is_connected", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return True
 
     @property
     def is_authorized(self) -> bool:
@@ -247,122 +355,211 @@ class MtprotoEngine:
     def runner(self) -> LoopRunner:
         return self._runner
 
-    def connect(self) -> None:
-        require_splusthon()
-        self._runner.start()
+    def _make_client(self) -> Any:
         session = SQLiteSession(self._session_path())
-        self._client = _SPClient(
+        return _SPClient(
             session,
             self._api_id,
             self._api_hash,
             app_version=SPLUS_APP_VERSION,
             lang_code=SPLUS_LANG,
             system_lang_code=SPLUS_LANG,
+            base_logger=logger,
+            auto_reconnect=True,
         )
+
+    def connect(self) -> None:
+        """Open MTProto and repair one stale auth-key session automatically."""
+        require_splusthon()
+        if self.is_connected:
+            return
+
+        last_error: Optional[BaseException] = None
+        for attempt in range(2):
+            try:
+                self._runner.start()
+                self._client = self._make_client()
+                self._runner.run(self._client.connect(), timeout=45)
+                self._connected = True
+                self._client.add_event_handler(
+                    self._handle_new_message,
+                    _sp_events.NewMessage(incoming=True),
+                )
+                try:
+                    authorized = self._runner.run(
+                        self._client.is_user_authorized(), timeout=20
+                    )
+                except Exception as exc:
+                    if _is_auth_key_error(exc):
+                        raise
+                    logger.warning("is_user_authorized check failed: %s", exc)
+                    authorized = False
+                self._authorized = bool(authorized)
+                for session_file in (
+                    self._session_path(), self._session_path() + ".session"
+                ):
+                    if os.path.isfile(session_file):
+                        try:
+                            os.chmod(session_file, 0o600)
+                        except OSError:
+                            pass  # Windows ACLs/unsupported filesystems
+                logger.info(
+                    "MTProto connected (authorized=%s) for %s",
+                    self._authorized,
+                    self._phone,
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                stale_key = _is_auth_key_error(exc)
+                logger.warning("MTProto connect attempt %d failed: %s", attempt + 1, exc)
+                self.disconnect()
+                if stale_key and attempt == 0:
+                    removed = self.delete_session()
+                    logger.warning(
+                        "Invalid MTProto auth key; session reset (removed=%s), retrying",
+                        removed,
+                    )
+                    continue
+                break
+
+        raise TransportError(f"MTProto connect failed: {last_error}") from last_error
+
+    def _reset_invalid_session(self) -> None:
+        """Close the old transport, remove its key, then create a fresh client."""
+        self.disconnect()
+        self.delete_session()
+        self.connect()
+
+    def _ensure_transport_connected(self) -> None:
+        if self.is_connected:
+            return
+        if self._client is None or not self._runner.is_running:
+            self.connect()
+            return
+
+        logger.warning("MTProto dropped while waiting for credentials; reconnecting")
         self._runner.run(self._client.connect(), timeout=45)
         self._connected = True
-        # Register event handler
-        self._client.add_event_handler(
-            self._handle_new_message,
-            _sp_events.NewMessage(incoming=True),
-        )
-        try:
-            authorized = self._runner.run(
-                self._client.is_user_authorized(), timeout=20
-            )
-        except Exception as exc:
-            logger.warning("is_user_authorized check failed: %s", exc)
-            authorized = False
-        self._authorized = bool(authorized)
-        logger.info(
-            "MTProto connected (authorized=%s) for %s",
-            self._authorized,
-            self._phone,
-        )
 
-    def login(self, code_callback: Optional[Callable[[], str]] = None) -> str:
-        """
-        Ensure the client is authorized.
+    def login(
+        self,
+        code_callback: Optional[Callable[[], str]] = None,
+        password_callback: Optional[Callable[[], str]] = None,
+    ) -> str:
+        """Authorize without ever blocking the asyncio/WebSocket loop.
 
-        Returns
-        -------
-        str
-            ``\"session_restored\"`` | ``\"success\"`` | ``\"already\"``
+        Network operations run on :class:`LoopRunner`; code and 2FA callbacks
+        deliberately run on the caller thread between those short async phases.
         """
-        # Hard phone validation before any network call
         try:
             self._phone = validate_phone(self._phone)
         except ValueError as exc:
             raise LoginError(str(exc)) from exc
 
-        if not self._connected:
+        if not self.is_connected:
             self.connect()
-
         if self._authorized:
             return "session_restored"
 
         if code_callback is None:
-            code_callback = lambda: input("🔑 Enter verification code: ")
+            def code_callback() -> str:
+                return input("🔑 Enter verification code: ")
+        if password_callback is None:
+            def password_callback() -> str:
+                return input("🔐 2FA password: ")
 
         phone = self._phone
         if not phone:
-            raise LoginError(
-                "شماره تلفن خالی/نامعتبر است. مثال: 09123456789"
-            )
+            raise LoginError("شماره تلفن خالی/نامعتبر است. مثال: 09123456789")
 
-        async def _do_login():
-            # send_code_request needs a non-empty phone string
-            await self._client.send_code_request(phone)
-            code = code_callback()
-            if not code:
-                raise LoginError("Empty verification code")
+        last_error: Optional[BaseException] = None
+        for auth_attempt in range(2):
             try:
-                await self._client.sign_in(phone=phone, code=str(code).strip())
+                # Phase 1: a short network operation on the asyncio thread.
+                async def _request_code():
+                    return await self._client.send_code_request(phone)
+
+                self._runner.run(_request_code(), timeout=45)
+
+                # Phase 2: caller/UI thread. Never move this into a coroutine.
+                code = code_callback()
+                code = str(code or "").strip()
+                if not code:
+                    raise LoginError("Empty verification code")
+
+                # Phase 3: the user may have taken a while; repair a dropped WS.
+                self._ensure_transport_connected()
+
+                # Phase 4: another short network operation on the asyncio thread.
+                async def _sign_in_code():
+                    return await self._client.sign_in(phone=phone, code=code)
+
+                try:
+                    self._runner.run(_sign_in_code(), timeout=60)
+                except Exception as exc:
+                    if not _is_password_needed(exc):
+                        raise
+                    # 2FA input also belongs to the caller thread.
+                    password = str(password_callback() or "")
+                    if not password:
+                        raise LoginError("Empty 2FA password")
+                    self._ensure_transport_connected()
+
+                    async def _sign_in_password():
+                        return await self._client.sign_in(password=password)
+
+                    self._runner.run(_sign_in_password(), timeout=60)
+
+                async def _authorized_check():
+                    return await self._client.is_user_authorized()
+
+                if not self._runner.run(_authorized_check(), timeout=20):
+                    raise LoginError("Server did not authorize this session")
+                self._authorized = True
+                return "success"
+            except LoginError:
+                raise
             except Exception as exc:
-                name = type(exc).__name__
-                if "SessionPasswordNeeded" in name or "password" in str(exc).lower():
-                    pwd = input("🔐 2FA password: ")
-                    await self._client.sign_in(password=pwd)
-                else:
-                    raise LoginError(f"sign_in failed: {exc}") from exc
-            return True
+                last_error = exc
+                if _is_auth_key_error(exc) and auth_attempt == 0:
+                    logger.warning("Auth key is not registered; rebuilding session once")
+                    self._reset_invalid_session()
+                    if self._authorized:
+                        return "session_restored"
+                    continue
+                msg = str(exc)
+                if "NoneType" in msg or "bytes or str expected" in msg:
+                    raise LoginError(
+                        f"شماره نامعتبر یا پاسخ سرور خالی: {exc}. "
+                        "شماره واقعی 11 رقمی ایرانی بدهید (0912…)."
+                    ) from exc
+                raise LoginError(f"sign_in failed: {exc}") from exc
 
-        try:
-            self._runner.run(_do_login(), timeout=120)
-        except LoginError:
-            raise
-        except Exception as exc:
-            # Surface NoneType from bad phone clearly
-            msg = str(exc)
-            if "NoneType" in msg or "bytes or str expected" in msg:
-                raise LoginError(
-                    f"شماره نامعتبر یا پاسخ سرور خالی: {exc}. "
-                    "شماره واقعی 11 رقمی ایرانی بدهید (0912…)."
-                ) from exc
-            raise LoginError(str(exc)) from exc
-
-        self._authorized = True
-        return "success"
+        raise LoginError(str(last_error or "Login failed")) from last_error
 
     def disconnect(self) -> None:
-        """Clean disconnect – close MTProto + aiohttp session, stop loop."""
+        """Idempotently close MTProto, nested aiohttp sessions and the loop."""
         client = self._client
         runner = self._runner
-        if client is not None and runner.is_running:
-            try:
-                # Prefer async disconnect on the loop
-                runner.run(self._safe_disconnect(client), timeout=20)
-            except Exception as exc:
-                logger.debug("disconnect error: %s", exc)
-                # Best-effort sync close if available
-                try:
-                    if hasattr(client, "session") and hasattr(client.session, "close"):
-                        client.session.close()
-                except Exception:
-                    pass
         self._connected = False
         self._authorized = False
         self._client = None
+
+        if client is not None and runner.is_running:
+            if runner.in_loop_thread():
+                async def _shutdown_from_loop():
+                    try:
+                        await self._safe_disconnect(client)
+                    finally:
+                        runner.stop(timeout=0)
+
+                runner.create_task(_shutdown_from_loop())
+                return
+            try:
+                runner.run(self._safe_disconnect(client), timeout=25)
+            except Exception as exc:
+                logger.debug("disconnect error: %s", exc)
         try:
             runner.stop(timeout=8.0)
         except Exception as exc:
@@ -370,23 +567,52 @@ class MtprotoEngine:
 
     async def _safe_disconnect(self, client: Any) -> None:
         try:
-            await client.disconnect()
+            result = client.disconnect()
+            if inspect.isawaitable(result):
+                await result
         except Exception as exc:
             logger.debug("client.disconnect: %s", exc)
-        # Extra cleanup for aiohttp ClientSession leftovers
-        for attr in ("_sender", "session", "_connection"):
-            obj = getattr(client, attr, None)
-            if obj is None:
-                continue
-            close = getattr(obj, "close", None) or getattr(obj, "disconnect", None)
-            if close is None:
-                continue
+
+        # SPlusthon versions have stored aiohttp sessions at different depths.
+        # Close only session-like objects here; do not disconnect the sender twice.
+        seen = set()
+        queue = [client]
+        for _ in range(4):
+            next_queue = []
+            for parent in queue:
+                if parent is None or id(parent) in seen:
+                    continue
+                seen.add(id(parent))
+                for attr in (
+                    "_sender", "_connection", "connection", "_session",
+                    "_cached_session", "session",
+                ):
+                    child = getattr(parent, attr, None)
+                    if child is not None and id(child) not in seen:
+                        next_queue.append(child)
+                module = type(parent).__module__.lower()
+                is_http_session = "aiohttp" in module or hasattr(parent, "ws_connect")
+                if is_http_session and not bool(getattr(parent, "closed", False)):
+                    close = getattr(parent, "close", None)
+                    if close:
+                        try:
+                            result = close()
+                            if inspect.isawaitable(result):
+                                await result
+                        except Exception as exc:
+                            logger.debug("nested session close: %s", exc)
+            queue = next_queue
+
+        # Finally flush/close the SQLite session when supported.
+        session = getattr(client, "session", None)
+        close = getattr(session, "close", None)
+        if close:
             try:
                 result = close()
-                if hasattr(result, "__await__"):
+                if inspect.isawaitable(result):
                     await result
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("SQLite session close: %s", exc)
 
     # ── events ─────────────────────────────────────────
 
@@ -418,11 +644,7 @@ class MtprotoEngine:
                 is_private = kind == "personal"
                 is_group = kind == "group"
                 is_channel = kind == "channel"
-                if chat_name:
-                    self._entity_cache[chat_name] = chat
-                if chat_id:
-                    self._kind_cache[chat_id] = kind
-                    self._kind_cache[chat_name] = kind
+                self._remember_entity(chat_name, chat, kind=kind, entity_id=chat_id)
         except Exception:
             chat_name = chat_id
             # Heuristic from event flags when available
@@ -554,27 +776,65 @@ class MtprotoEngine:
         force_document: bool = False,
         reply_to: Optional[int] = None,
     ) -> Dict[str, Any]:
+        """Upload a Windows/Unicode path safely, retrying connection-server 422 once."""
         self._ensure()
-        if not path or not os.path.isfile(path):
-            raise SoroPyError(f"File not found: {path}")
+        clean_path = os.path.expanduser(str(path or "").strip().strip('"').strip("'"))
+        if not clean_path or not os.path.isfile(clean_path):
+            raise SoroPyError(f"File not found: {clean_path or path}")
 
-        async def _send():
+        try:
+            with open(clean_path, "rb") as source:
+                payload = source.read()
+        except OSError as exc:
+            raise SoroPyError(f"Cannot read file '{clean_path}': {exc}") from exc
+
+        safe_name = _ascii_upload_name(clean_path)
+        extension = os.path.splitext(clean_path)[1].lower()
+        as_document = bool(force_document or extension not in _IMAGE_EXTENSIONS)
+
+        async def _send_once():
             target = await self._resolve(entity)
+            stream = io.BytesIO(payload)
+            stream.name = safe_name  # type: ignore[attr-defined]
+            uploaded = await self._client.upload_file(
+                stream,
+                part_size_kb=512,
+                file_size=len(payload),
+                file_name=safe_name,
+            )
             kwargs: Dict[str, Any] = {
                 "caption": caption or "",
-                "force_document": force_document,
+                "force_document": as_document,
             }
             if reply_to:
                 kwargs["reply_to"] = int(reply_to)
-            result = await self._client.send_file(target, path, **kwargs)
-            # send_file may return a list
+            result = await self._client.send_file(target, uploaded, **kwargs)
             msg = result[0] if isinstance(result, list) and result else result
             return {
                 "id": getattr(msg, "id", None),
                 "chat_id": str(getattr(msg, "chat_id", "") or entity),
+                "file_name": safe_name,
             }
 
-        return self._runner.run(_send(), timeout=120)
+        async def _send_with_retry():
+            try:
+                return await _send_once()
+            except Exception as exc:
+                if not _is_upload_connection_error(exc):
+                    raise
+                logger.warning(
+                    "FILE_REQUEST_RECEIVED_ON_CONNECTION / 422; reconnecting and retrying %s once",
+                    safe_name,
+                )
+                try:
+                    await self._client.disconnect()
+                except Exception:
+                    pass
+                await self._client.connect()
+                self._connected = True
+                return await _send_once()
+
+        return self._runner.run(_send_with_retry(), timeout=300)
 
     def download_media(
         self,
@@ -670,30 +930,19 @@ class MtprotoEngine:
 
         async def _unpin():
             target = await self._resolve(entity)
-            if message_id is None:
-                # unpin all
-                await self._client.pin_message(target, None)
+            mid = int(message_id) if message_id is not None else None
+            if hasattr(self._client, "unpin_message"):
+                await self._client.unpin_message(target, mid)
             else:
-                await self._client.pin_message(target, int(message_id), unpin=True)
+                # Older Telethon-compatible versions accept None for unpin-all.
+                await self._client.pin_message(target, None)
             return True
 
         try:
             return bool(self._runner.run(_unpin(), timeout=30))
         except Exception as exc:
-            # Fallback: EditPinnedMessagesRequest style
-            try:
-                async def _unpin2():
-                    target = await self._resolve(entity)
-                    if hasattr(self._client, "unpin_message"):
-                        await self._client.unpin_message(target, message_id)
-                    else:
-                        await self._client.pin_message(target, None)
-                    return True
-
-                return bool(self._runner.run(_unpin2(), timeout=30))
-            except Exception as exc2:
-                logger.error("unpin_message failed: %s / %s", exc, exc2)
-                return False
+            logger.error("unpin_message failed: %s", exc)
+            return False
 
     # ── dialogs / history ──────────────────────────────
 
@@ -707,9 +956,7 @@ class MtprotoEngine:
                 entity = d.entity
                 name = _entity_display_name(entity, str(d.id))
                 kind = _entity_kind(entity)
-                self._entity_cache[name] = entity
-                self._kind_cache[name] = kind
-                self._kind_cache[str(d.id)] = kind
+                self._remember_entity(name, entity, kind=kind, entity_id=str(d.id))
                 out.append(
                     {
                         "name": name,
@@ -766,8 +1013,7 @@ class MtprotoEngine:
             for u in users:
                 name = _entity_display_name(u, str(u.id))
                 phone = getattr(u, "phone", "") or ""
-                self._entity_cache[name] = u
-                self._kind_cache[name] = "personal"
+                self._remember_entity(name, u, kind="personal")
                 out.append({"name": name, "phone": phone, "id": str(u.id)})
             return out
 
@@ -776,28 +1022,103 @@ class MtprotoEngine:
     def add_contact(self, phone: str, first_name: str, last_name: str = "") -> bool:
         self._ensure()
         try:
-            phone_n = validate_phone(phone).lstrip("+")
-        except ValueError:
-            phone_n = normalize_phone(phone).lstrip("+")
+            normalized = validate_phone(phone)
+        except ValueError as exc:
+            logger.warning("add_contact rejected invalid phone: %s", exc)
+            return False
+        if not str(first_name or "").strip():
+            logger.warning("add_contact requires a non-empty first name")
+            return False
+
+        national = "0" + normalized[3:]
+        variants = [normalized.lstrip("+"), normalized, national]
 
         async def _add():
-            contact = _sp_types.InputPhoneContact(
-                client_id=0,
-                phone=phone_n,
-                first_name=first_name,
-                last_name=last_name or "",
+            errors = []
+            for index, value in enumerate(variants):
+                contact = _sp_types.InputPhoneContact(
+                    client_id=index + 1,
+                    phone=value,
+                    first_name=str(first_name).strip(),
+                    last_name=str(last_name or "").strip(),
+                )
+                try:
+                    result = await self._client(
+                        _sp_functions.contacts.ImportContactsRequest([contact])
+                    )
+                except Exception as exc:
+                    errors.append(f"{value}: {exc}")
+                    continue
+                imported = getattr(result, "imported", None) or []
+                users = getattr(result, "users", None) or []
+                if imported or users:
+                    for found_user in users:
+                        name = _entity_display_name(
+                            found_user, str(getattr(found_user, "id", ""))
+                        )
+                        self._remember_entity(name, found_user, kind="personal")
+                    return True
+            logger.warning(
+                "Contact was not imported. Verify the 11-digit number is registered "
+                "in Soroush Plus. Server details: %s",
+                "; ".join(errors) if errors else "no imported users",
             )
-            result = await self._client(
-                _sp_functions.contacts.ImportContactsRequest([contact])
-            )
-            imported = getattr(result, "imported", None) or []
-            return len(imported) > 0
+            return False
 
         try:
             return bool(self._runner.run(_add(), timeout=30))
         except Exception as exc:
             logger.error("add_contact failed: %s", exc)
             return False
+
+    def search_contacts(self, query: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Search local contacts first, then use contacts.SearchRequest."""
+        self._ensure()
+        needle = str(query or "").strip().casefold()
+        if not needle:
+            return []
+
+        async def _search():
+            local_result = await self._client(
+                _sp_functions.contacts.GetContactsRequest(0)
+            )
+            users = list(getattr(local_result, "users", None) or [])
+            matched: Dict[str, Any] = {}
+            for user in users:
+                name = _entity_display_name(user, str(getattr(user, "id", "")))
+                phone = str(getattr(user, "phone", "") or "")
+                username = str(getattr(user, "username", "") or "")
+                if any(needle in value.casefold() for value in (name, phone, username)):
+                    matched[str(getattr(user, "id", name))] = user
+
+            search_cls = getattr(_sp_functions.contacts, "SearchRequest", None)
+            if search_cls is not None:
+                try:
+                    remote = await self._client(search_cls(q=str(query).strip(), limit=limit))
+                    for user in getattr(remote, "users", None) or []:
+                        matched[str(getattr(user, "id", id(user)))] = user
+                except Exception as exc:
+                    logger.debug("remote contact search unavailable: %s", exc)
+
+            out = []
+            for user in list(matched.values())[:limit]:
+                name = _entity_display_name(user, str(getattr(user, "id", "")))
+                self._remember_entity(name, user, kind="personal")
+                out.append(
+                    {
+                        "name": name,
+                        "phone": str(getattr(user, "phone", "") or ""),
+                        "username": str(getattr(user, "username", "") or ""),
+                        "id": str(getattr(user, "id", "")),
+                    }
+                )
+            return out
+
+        try:
+            return self._runner.run(_search(), timeout=30)
+        except Exception as exc:
+            logger.error("search_contacts failed: %s", exc)
+            return []
 
     def block_user(self, user: str) -> bool:
         self._ensure()
@@ -872,14 +1193,10 @@ class MtprotoEngine:
             if hasattr(self._client, "kick_participant"):
                 await self._client.kick_participant(chat_ent, user_ent)
             else:
-                # ban then unban
-                rights = ChatBannedRights(
-                    until_date=None,
-                    view_messages=True,
+                # High-level edit_permissions uses False to apply a restriction.
+                await self._client.edit_permissions(
+                    chat_ent, user_ent, view_messages=False
                 )
-                await self._client.edit_permissions(chat_ent, user_ent, rights)
-                await self._client.edit_permissions(chat_ent, user_ent, view_messages=True)
-                # actually unban
                 await self._client.edit_permissions(chat_ent, user_ent)
             return True
 
@@ -904,8 +1221,9 @@ class MtprotoEngine:
         async def _ban():
             chat_ent = await self._resolve(chat)
             user_ent = await self._resolve(user)
-            # Default: fully ban (view_messages=True means banned in TL)
-            kwargs = dict(rights_kwargs) if rights_kwargs else {"view_messages": True}
+            # SPlusthon's high-level API applies restrictions for False values.
+            # Therefore view_messages=False is a full ban; True would unban.
+            kwargs = dict(rights_kwargs) if rights_kwargs else {"view_messages": False}
             if until_date is not None:
                 kwargs["until_date"] = until_date
             await self._client.edit_permissions(chat_ent, user_ent, **kwargs)
@@ -983,38 +1301,42 @@ class MtprotoEngine:
         async def _promote():
             chat_ent = await self._resolve(chat)
             user_ent = await self._resolve(user)
-            # Defaults: common moderate rights
-            defaults = {
-                "change_info": admin_rights.get("change_info", False),
-                "post_messages": admin_rights.get("post_messages", False),
-                "edit_messages": admin_rights.get("edit_messages", False),
-                "delete_messages": admin_rights.get("delete_messages", True),
-                "ban_users": admin_rights.get("ban_users", True),
-                "invite_users": admin_rights.get("invite_users", True),
-                "pin_messages": admin_rights.get("pin_messages", True),
-                "add_admins": admin_rights.get("add_admins", False),
-                "anonymous": admin_rights.get("anonymous", False),
-                "manage_call": admin_rights.get("manage_call", False),
-                "other": admin_rights.get("other", True),
+            allowed = {
+                "change_info", "post_messages", "edit_messages", "delete_messages",
+                "ban_users", "invite_users", "pin_messages", "add_admins",
+                "anonymous", "manage_call",
             }
-            # Merge any extra keys
-            for k, v in admin_rights.items():
-                if k not in defaults:
-                    defaults[k] = v
+            defaults = {
+                "change_info": False,
+                "post_messages": False,
+                "edit_messages": False,
+                "delete_messages": True,
+                "ban_users": True,
+                "invite_users": True,
+                "pin_messages": True,
+                "add_admins": False,
+                "anonymous": False,
+                "manage_call": False,
+            }
+            defaults.update({k: v for k, v in admin_rights.items() if k in allowed})
+            rank = str(admin_rights.get("rank") or admin_rights.get("title") or "admin")
+
             if hasattr(self._client, "edit_admin"):
-                await self._client.edit_admin(chat_ent, user_ent, **defaults)
+                # edit_admin does not accept TL-only fields such as `other` or `rank`.
+                await self._client.edit_admin(
+                    chat_ent, user_ent, title=rank, **defaults
+                )
             else:
-                rights = ChatAdminRights(**{
-                    k: v for k, v in defaults.items()
-                    if k in ChatAdminRights.__annotations__
-                    or True  # best effort
-                })
+                tl_allowed = set(inspect.signature(ChatAdminRights).parameters)
+                rights = ChatAdminRights(
+                    **{k: v for k, v in defaults.items() if k in tl_allowed}
+                )
                 await self._client(
                     _sp_functions.channels.EditAdminRequest(
                         channel=chat_ent,
                         user_id=user_ent,
                         admin_rights=rights,
-                        rank=admin_rights.get("rank", "admin"),
+                        rank=rank,
                     )
                 )
             return True
@@ -1045,7 +1367,7 @@ class MtprotoEngine:
                         "phone": getattr(u, "phone", None) or "",
                     }
                 )
-                self._entity_cache[name] = u
+                self._remember_entity(name, u, kind="personal")
             return out
 
         try:
@@ -1144,49 +1466,65 @@ class MtprotoEngine:
     # ── resolve helpers ────────────────────────────────
 
     async def _resolve(self, entity: str):
-        if entity in self._entity_cache:
-            return self._entity_cache[entity]
-        # username
-        if entity.startswith("@"):
-            resolved = await self._client.get_entity(entity)
-            self._entity_cache[entity] = resolved
-            self._kind_cache[entity] = _entity_kind(resolved)
+        key = str(entity or "").strip()
+        if not key:
+            raise SoroPyError("Entity cannot be empty")
+        if key in self._ambiguous_names:
+            raise SoroPyError(
+                f"Ambiguous entity name: {key!r}. Use @username or numeric chat/user id."
+            )
+        if key in self._entity_cache:
+            return self._entity_cache[key]
+
+        if key.startswith("@") or key.lstrip("-").isdigit():
+            value: Union[str, int] = int(key) if key.lstrip("-").isdigit() else key
+            resolved = await self._client.get_entity(value)
+            self._remember_entity(key, resolved)
             return resolved
-        # numeric id
-        if entity.lstrip("-").isdigit():
-            resolved = await self._client.get_entity(int(entity))
-            self._entity_cache[entity] = resolved
-            self._kind_cache[entity] = _entity_kind(resolved)
+
+        # Display-name lookup is exact and must be unique. Check dialogs before
+        # treating a bare word as a username, otherwise a chat named "ali"
+        # could be confused with the unrelated @ali account.
+        dialogs = await self._client.get_dialogs(limit=200)
+        exact = []
+        for dialog in dialogs:
+            candidate = dialog.entity
+            name = _entity_display_name(candidate, "")
+            kind = _entity_kind(candidate)
+            self._remember_entity(
+                name, candidate, kind=kind, entity_id=str(getattr(dialog, "id", "") or "")
+            )
+            if name and name.casefold() == key.casefold():
+                exact.append(candidate)
+        unique = {
+            str(getattr(candidate, "id", id(candidate))): candidate
+            for candidate in exact
+        }
+        if len(unique) == 1:
+            resolved = next(iter(unique.values()))
+            self._remember_entity(key, resolved)
             return resolved
-        # try as-is (phone / username without @)
+        if len(unique) > 1:
+            self._ambiguous_names.add(key)
+            raise SoroPyError(
+                f"Ambiguous entity name: {key!r}. Use @username or numeric chat/user id."
+            )
+
+        # Backward-compatible bare username/phone resolution, only after no
+        # dialog has that exact display name.
         try:
-            resolved = await self._client.get_entity(entity)
-            self._entity_cache[entity] = resolved
-            self._kind_cache[entity] = _entity_kind(resolved)
+            resolved = await self._client.get_entity(key)
+            self._remember_entity(key, resolved)
             return resolved
         except Exception:
-            pass
-        # search dialogs by name
-        dialogs = await self._client.get_dialogs(limit=200)
-        for d in dialogs:
-            ent = d.entity
-            name = _entity_display_name(ent, "")
-            kind = _entity_kind(ent)
-            if name:
-                self._entity_cache[name] = ent
-                self._kind_cache[name] = kind
-            if name and (entity == name or entity in name):
-                self._entity_cache[entity] = ent
-                self._kind_cache[entity] = kind
-                return ent
-        raise SoroPyError(f"Entity not found: {entity}")
+            raise SoroPyError(f"Entity not found: {key}") from None
 
     def _ensure(self) -> None:
-        if not self._connected or self._client is None:
-            raise SoroPyError("Not connected. Call login() first.")
+        if not self.is_connected:
+            raise TransportError("MTProto transport is disconnected; reconnect/login again.")
         if not self._authorized:
             raise SoroPyError("Not authorized. Complete login first.")
 
     def _ensure_connected(self) -> None:
-        if not self._connected or self._client is None:
-            raise SoroPyError("Not connected. Call login() first.")
+        if not self.is_connected:
+            raise TransportError("MTProto transport is disconnected; reconnect/login again.")

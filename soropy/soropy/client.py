@@ -24,7 +24,7 @@ from soropy.types import (
     LoginStatus,
     SendResult,
 )
-from soropy.utils import get_logger, normalize_phone, validate_phone
+from soropy.utils import get_logger, validate_phone
 
 logger = get_logger("soropy.client")
 
@@ -77,7 +77,8 @@ class SoroushClient:
     chrome_binary / chromedriver_path / extra_chrome_args
         Selenium-only options.
     ws_url / origin
-        WebSocket-only overrides.
+        Reserved WebSocket settings. Current SPlusthon transport uses the
+        official endpoint/origin and logs when custom values cannot be applied.
 
     Example
     -------
@@ -162,6 +163,7 @@ class SoroushClient:
         self._is_logged_in = False
         self._monitor_stop = threading.Event()
         self._event_handlers: Dict[str, list] = {}
+        self._realtime_reply_lock = threading.Lock()
 
         # Wire realtime auto-reply when backend supports events
         if self._backend.supports(BackendCapability.REALTIME_EVENTS):
@@ -255,7 +257,8 @@ class SoroushClient:
             if is_private is False or is_group or is_channel:
                 return
             if is_private is not True:
-                # Unknown kind – check backend cache
+                # Unknown events are denied by default; only an explicit cached
+                # personal classification may opt them into auto-reply.
                 chat_name_probe = (
                     data.get("chat_name")
                     or data.get("sender_name")
@@ -268,9 +271,7 @@ class SoroushClient:
                         kind = self._backend.chat_kind(chat_name_probe)  # type: ignore
                     except Exception:
                         kind = None
-                if kind and kind != "personal":
-                    return
-                if kind is None and (is_group or is_channel):
+                if kind != "personal":
                     return
 
         text = (data.get("text") or "").strip()
@@ -283,46 +284,81 @@ class SoroushClient:
         if not text or not chat_name:
             return
 
-        reply = self._auto_reply.get_reply(text, chat_name, 1)
-        if reply is None:
-            return
-
-        msg_id = data.get("message_id") or ""
-
-        # Prefer non-blocking schedule on WS backend
-        if hasattr(self._backend, "schedule_reply"):
-            def _done(ok: bool, err: str) -> None:
-                if ok:
-                    self._auto_reply.mark_replied(chat_name, text)
-                    logger.info("Realtime auto-reply → %s: %s", chat_name, reply[:40])
-                elif err and _is_soft_skip_error(err):
-                    logger.debug("Realtime auto-reply soft-skip %s: %s", chat_name, err)
-                elif err:
-                    logger.warning("Realtime auto-reply failed %s: %s", chat_name, err)
-
-            try:
-                self._backend.schedule_reply(  # type: ignore[attr-defined]
-                    chat_name, str(msg_id), reply, on_done=_done
-                )
+        msg_id = str(data.get("message_id") or "")
+        # Selection + reservation must be atomic because EventBus may process
+        # several incoming messages concurrently.
+        reply_lock = getattr(self, "_realtime_reply_lock", None)
+        if reply_lock is None:  # compatibility for manually constructed clients
+            reply_lock = self._realtime_reply_lock = threading.Lock()
+        with reply_lock:
+            reply = self._auto_reply.get_reply(
+                text, chat_name, 1, message_id=msg_id
+            )
+            if reply is None:
                 return
-            except Exception as exc:
-                logger.debug("schedule_reply fallback: %s", exc)
+            # Reserve before queueing. This closes the realtime-vs-poll race
+            # even if delivery takes several seconds.
+            self._auto_reply.mark_replied(chat_name, text, message_id=msg_id)
 
-        # Sync fallback (selenium or schedule unavailable)
+        logger.info("Realtime auto-reply queued → %s: %s", chat_name, reply[:40])
+
+        def _deliver() -> None:
+            try:
+                result = self._backend.reply_to_message(chat_name, msg_id, reply)
+                if result.success:
+                    logger.info(
+                        "Realtime auto-reply delivered → %s: %s",
+                        chat_name,
+                        reply[:40],
+                    )
+                elif result.error and _is_soft_skip_error(result.error):
+                    logger.debug(
+                        "Realtime auto-reply soft-skip %s: %s",
+                        chat_name,
+                        result.error,
+                    )
+                else:
+                    self._auto_reply.unmark_replied(chat_name, text, message_id=msg_id)
+                    logger.warning(
+                        "Realtime auto-reply failed → %s: %s",
+                        chat_name,
+                        result.error or "send failed",
+                    )
+            except Exception as exc:
+                if _is_soft_skip_error(str(exc)):
+                    logger.debug("Realtime auto-reply soft-skip %s: %s", chat_name, exc)
+                else:
+                    self._auto_reply.unmark_replied(chat_name, text, message_id=msg_id)
+                    logger.warning("Realtime auto-reply failed → %s: %s", chat_name, exc)
+
         try:
-            result = self._backend.reply_to_message(chat_name, str(msg_id), reply)
-            if result.success:
-                self._auto_reply.mark_replied(chat_name, text)
-                logger.info("Realtime auto-reply → %s: %s", chat_name, reply[:40])
-            elif result.error and _is_soft_skip_error(result.error):
-                logger.debug(
-                    "Realtime auto-reply soft-skip %s: %s", chat_name, result.error
-                )
+            # Crucially, LoopRunner.run() is called by this daemon worker, not
+            # by SPlusthon's asyncio receive thread.
+            threading.Thread(
+                target=_deliver,
+                daemon=True,
+                name=f"soropy-reply-{msg_id or 'message'}",
+            ).start()
         except Exception as exc:
-            if _is_soft_skip_error(str(exc)):
-                logger.debug("Realtime auto-reply soft-skip %s: %s", chat_name, exc)
-            else:
-                logger.warning("Realtime auto-reply error %s: %s", chat_name, exc)
+            logger.debug("auto-reply worker unavailable, using async fallback: %s", exc)
+            if hasattr(self._backend, "schedule_reply"):
+                try:
+                    self._backend.schedule_reply(  # type: ignore[attr-defined]
+                        chat_name,
+                        msg_id,
+                        reply,
+                        on_done=lambda ok, err: logger.info(
+                            "Realtime auto-reply delivered → %s: %s", chat_name, reply[:40]
+                        ) if ok else logger.warning(
+                            "Realtime auto-reply failed → %s: %s", chat_name, err
+                        ),
+                    )
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "Realtime auto-reply failed → %s: %s",
+                        chat_name,
+                        fallback_exc,
+                    )
 
     # ════════════════════════════════════════════════════
     #  Lifecycle
@@ -378,6 +414,13 @@ class SoroushClient:
     def _ensure_ready(self):
         if not self._is_logged_in:
             raise SoroPyError("Not logged in. Call login() first.")
+        if not self._backend.is_logged_in:
+            # Keep the logical login flag: SPlusthon may auto-reconnect shortly.
+            # A later operation should work again without forcing re-auth.
+            raise SoroPyError(
+                "Transport is temporarily disconnected. Wait for auto-reconnect or call login() again; "
+                "if the auth key is invalid, delete_session() first."
+            )
 
     def _require_ws(self, method: str) -> None:
         if self._backend.name != "websocket":
@@ -710,6 +753,19 @@ class SoroushClient:
 
         results: Dict[str, List[SendResult]] = {}
 
+        def _reserve_reply(
+            message_text: str, chat_name: str, index: int, message_id: str = ""
+        ):
+            with self._realtime_reply_lock:
+                selected = engine.get_reply(
+                    message_text, chat_name, index, message_id=message_id
+                )
+                if selected is not None:
+                    engine.mark_replied(
+                        chat_name, message_text, message_id=message_id
+                    )
+                return selected
+
         # Cap unread chats on WS to avoid thrashing 80+ dialogs
         max_chats = (
             WS_MAX_UNREAD_PER_CYCLE
@@ -753,7 +809,7 @@ class SoroushClient:
                 continue
 
             if not messages:
-                reply = engine.get_reply("", uc.name, 1)
+                reply = _reserve_reply("", uc.name, 1)
                 if reply:
                     try:
                         if self._backend.name == "selenium" and hasattr(
@@ -765,21 +821,24 @@ class SoroushClient:
                             )
                         else:
                             sr = self._backend.send_message(uc.name, reply)
-                        if sr.success:
-                            engine.mark_replied(uc.name, "")
-                        elif sr.error and _is_soft_skip_error(sr.error):
-                            logger.debug(
-                                "poll send soft-skip %s: %s", uc.name, sr.error
-                            )
+                        if not sr.success:
+                            engine.unmark_replied(uc.name, "")
+                            if sr.error and _is_soft_skip_error(sr.error):
+                                logger.debug(
+                                    "poll send soft-skip %s: %s", uc.name, sr.error
+                                )
                         chat_results.append(sr)
                     except Exception as exc:
+                        engine.unmark_replied(uc.name, "")
                         if _is_soft_skip_error(str(exc)):
                             logger.debug("poll soft-skip %s: %s", uc.name, exc)
                         else:
                             logger.warning("poll send error %s: %s", uc.name, exc)
             else:
                 for idx, msg in enumerate(messages, 1):
-                    reply = engine.get_reply(msg.text, uc.name, idx)
+                    reply = _reserve_reply(
+                        msg.text, uc.name, idx, message_id=msg.message_id
+                    )
                     if reply is None:
                         logger.debug(
                             "Skipping (no rule/duplicate) in '%s': %s",
@@ -795,14 +854,15 @@ class SoroushClient:
                             reply,
                             element_index=msg.element_index,
                         )
-                        if sr.success:
-                            engine.mark_replied(uc.name, msg.text)
-                        elif sr.error and _is_soft_skip_error(sr.error):
-                            logger.debug(
-                                "poll reply soft-skip %s: %s", uc.name, sr.error
-                            )
+                        if not sr.success:
+                            engine.unmark_replied(uc.name, msg.text, message_id=msg.message_id)
+                            if sr.error and _is_soft_skip_error(sr.error):
+                                logger.debug(
+                                    "poll reply soft-skip %s: %s", uc.name, sr.error
+                                )
                         chat_results.append(sr)
                     except Exception as exc:
+                        engine.unmark_replied(uc.name, msg.text, message_id=msg.message_id)
                         if _is_soft_skip_error(str(exc)):
                             logger.debug("poll soft-skip %s: %s", uc.name, exc)
                         else:
