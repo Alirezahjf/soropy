@@ -1,5 +1,7 @@
 """
-WebSocket / MTProto backend – full example.
+WebSocket / MTProto backend – basic realtime example.
+
+See also: examples/websocket/README.md
 
 Requires::
 
