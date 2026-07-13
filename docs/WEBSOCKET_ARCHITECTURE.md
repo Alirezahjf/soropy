@@ -249,6 +249,18 @@ splusthon>=1.1.2,<1.1.3
 | [`soropy/examples/websocket/group_moderator.py`](../soropy/examples/websocket/group_moderator.py) | مدیر گروه thread-safe با queue، ضدلینک، ضدواژه، ضد flood، ضد تکرار، state اتمیک و سه اخطار |
 | [`soropy/examples/websocket/ai_assistant.py`](../soropy/examples/websocket/ai_assistant.py) | دستیار چندارائه‌دهنده‌ای AI با lazy import برای OpenAI، Gemini، Claude و Ollama |
 | [`soropy/examples/websocket/capability_cookbook.py`](../soropy/examples/websocket/capability_cookbook.py) | cookbook کامل APIهای WebSocket، با جداسازی عملیات destructive از main |
-| [`soropy/examples/websocket/README.md`](../soropy/examples/websocket/README.md) | راهنمای فارسی نصب، env، امنیت، moderation، AI و MultiAccount |
+| [`soropy/examples/websocket/support_desk_bot.py`](../soropy/examples/websocket/support_desk_bot.py) | میز پشتیبانی ticket-based؛ PV → ticket، اعلان به گروه اپراتورها، queue/worker و state اتمیک |
+| [`soropy/examples/websocket/campaign_broadcaster.py`](../soropy/examples/websocket/campaign_broadcaster.py) | کمپین پیام‌رسانی امن؛ dry-run پیش‌فرض، CSV هدف، template و confirm=`YES` برای ارسال واقعی |
+| [`soropy/examples/websocket/event_audit_logger.py`](../soropy/examples/websocket/event_audit_logger.py) | Audit logger JSONL برای eventهای realtime با sanitize فیلدهای حساس |
+| [`soropy/examples/websocket/README.md`](../soropy/examples/websocket/README.md) | راهنمای فارسی نصب، env، امنیت، moderation، AI، پشتیبانی، کمپین و MultiAccount |
+
+الگوی مشترک مثال‌های long-running:
+
+1. `backend="websocket"`
+2. handler فقط enqueue می‌کند تا EventBus block نشود
+3. worker daemon پردازش می‌کند
+4. state با tmp + `os.replace` و `RLock` نوشته می‌شود
+5. `finally: bot.stop(); client.close()`
 
 خلاصهٔ سریع این مجموعه در [`WEBSOCKET_EXAMPLES.md`](WEBSOCKET_EXAMPLES.md) آمده است.
+اسکریپت انتشار امن‌تر: [`scripts/publish_pypi.py`](../scripts/publish_pypi.py) — نام پکیج همچنان `soropy` و extra نصب `soropy[ws]` است.
