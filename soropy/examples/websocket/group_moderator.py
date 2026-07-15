@@ -78,16 +78,12 @@
 
 from __future__ import annotations
 
-import copy
-import hashlib
 import json
-import math
 import os
 import queue
 import random
 import re
 import signal
-import string
 import threading
 import time
 import traceback
@@ -98,7 +94,6 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
     Deque,
     Dict,
     Iterable,
@@ -106,7 +101,6 @@ from typing import (
     Optional,
     Set,
     Tuple,
-    Union,
 )
 
 
@@ -974,7 +968,7 @@ class PollManager:
         lines = [f"{EMOJI['chart']} نظرسنجی: {poll.question}\n"]
         for i, option in enumerate(poll.options):
             lines.append(f"  {i + 1}. {option}")
-        lines.append(f"\nبرای رأی دادن: /vote شماره_گزینه")
+        lines.append("\nبرای رأی دادن: /vote شماره_گزینه")
         return "\n".join(lines)
 
 
@@ -2236,7 +2230,6 @@ class GroupModerator:
         if command == "/profile":
             target_id = arg1 or item.sender_id
             user = self.state.get_user(item.chat_id, target_id)
-            level = level_from_xp(user.get("xp", 0))
             progress = xp_progress(user.get("xp", 0))
             wc = self.state.warning_count(item.chat_id, target_id)
             is_b = self.state.is_banned(item.chat_id, target_id)
@@ -2660,7 +2653,7 @@ class GroupModerator:
             else:
                 self._reply_or_send(
                     item,
-                    f"Toggle نامعتبر. گزینه‌ها:\n"
+                    "Toggle نامعتبر. گزینه‌ها:\n"
                     + "\n".join(f"  /{t}" for t in sorted(valid_toggles)),
                 )
 

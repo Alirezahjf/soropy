@@ -34,7 +34,10 @@ import time
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from soropy import SoroushClient
 
 REQUIRED_SOROPY_VERSION = "1.3.6"
 GITHUB_INSTALL_SPEC = (
@@ -143,8 +146,6 @@ def ensure_latest_soropy() -> None:
 
 
 ensure_latest_soropy()
-
-from soropy import SoroushClient
 
 PHONE = os.getenv("SOROPY_PHONE", "09123456789")
 SESSION_DIR = os.getenv("SOROPY_SESSION_DIR", "soropy_ws_sessions")
@@ -521,6 +522,8 @@ def send_file_to_targets(
 
 
 def main() -> None:
+    from soropy import SoroushClient
+
     print("=" * 70)
     print("📤 ارسال تعاملی فایل/عکس با SoroPy WebSocket")
     print("=" * 70)

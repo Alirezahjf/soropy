@@ -222,6 +222,18 @@ _UPLOAD_CONNECTION_PROFILES = (
     (("type", "upload"),),
 )
 
+# Known Soroush Plus upload/file hosts.  Real media/file uploads should hit
+# these directly instead of the regular im-server connection host, because the
+# connection server rejects ``upload.SaveFilePartRequest`` with
+# ``FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER`` / RPC 422.
+UPLOAD_SERVER_HOSTS = (
+    "up.splus.ir",
+    "fs.splus.ir",
+    "fs2.splus.ir",
+    "storage.splus.ir",
+    "storage2.splus.ir",
+)
+
 
 class MtprotoEngine:
     """
@@ -276,6 +288,7 @@ class MtprotoEngine:
         # socket as upload-only and does not reject SaveFilePartRequest with
         # FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER / RPCError 422.
         self._upload_sender: Any = None
+        self._upload_sender_host_index: Optional[int] = None
         self._upload_sender_profile: Optional[int] = None
 
     def _remember_entity(
@@ -852,17 +865,24 @@ class MtprotoEngine:
             params=params,
         )
 
-    async def _ensure_upload_sender(self, profile_index: int = 0) -> Any:
+    async def _ensure_upload_sender(
+        self,
+        host_index: int = 0,
+        profile_index: int = 0,
+    ) -> Any:
         """Create (or return) a dedicated MTProto sender for file uploads.
 
         The sender is intentionally *not* pre-initialised with ``GetConfig``.
         On Soroush Plus, doing so can classify the socket as a normal
         connection and the subsequent ``SaveFilePartRequest`` fails with
         RPC 422.  The upload RPC itself is wrapped in ``InitConnection`` by
-        :meth:`_call_upload_sender`.
+        :meth:`_call_upload_sender` only when we fall back to the regular
+        connection host; known upload/file hosts accept the upload RPC
+        directly.
         """
         if (
             self._upload_sender is not None
+            and self._upload_sender_host_index == host_index
             and self._upload_sender_profile == profile_index
             and self._upload_sender.is_connected()
         ):
@@ -876,6 +896,17 @@ class MtprotoEngine:
         if client is None:
             raise TransportError("Cannot create upload sender: no main client")
 
+        # Use a dedicated upload/file host when available.  Only fall back to
+        # the regular connection host (wrapped with InitConnection profiles)
+        # when the upload-specific hosts are unreachable.
+        upload_hosts = UPLOAD_SERVER_HOSTS
+        if host_index < len(upload_hosts):
+            host = upload_hosts[host_index]
+            direct = True
+        else:
+            host = client.session.server_address
+            direct = False
+
         sender = MTProtoSender(
             client.session.auth_key,
             loggers=client._log,
@@ -886,7 +917,7 @@ class MtprotoEngine:
         )
 
         connection = client._connection(
-            client.session.server_address,
+            host,
             client.session.port,
             client.session.dc_id,
             loggers=client._log,
@@ -901,12 +932,19 @@ class MtprotoEngine:
             raise
 
         logger.info(
-            "Upload MTProto sender connected for %s (profile=%s)",
+            "Upload MTProto sender connected for %s (host=%s, profile=%s, direct=%s)",
             self._phone,
+            host,
             profile_index,
+            direct,
         )
         self._upload_sender = sender
+        self._upload_sender_host_index = host_index
         self._upload_sender_profile = profile_index
+        sender._soropy_upload_direct = direct
+        if direct:
+            # Upload hosts accept SaveFilePartRequest without wrapping.
+            sender._soropy_upload_initialized = True
         return sender
 
     async def _disconnect_upload_sender(self, sender: Any) -> None:
@@ -941,6 +979,7 @@ class MtprotoEngine:
         """Disconnect and discard the cached upload sender."""
         sender = self._upload_sender
         self._upload_sender = None
+        self._upload_sender_host_index = None
         self._upload_sender_profile = None
         await self._disconnect_upload_sender(sender)
 
@@ -952,13 +991,18 @@ class MtprotoEngine:
     ) -> Any:
         """Send one upload RPC through the upload sender.
 
-        The first ``SaveFilePart`` on a fresh upload sender is wrapped with
-        upload-specific ``InitConnection.params``; later parts use the same
-        already-classified upload socket directly.  This keeps the change local
-        to uploads and leaves the main WebSocket connection, realtime events,
-        auth and message sending untouched.
+        On dedicated upload/file hosts ``SaveFilePartRequest`` is sent directly
+        (the server already expects upload RPCs).  When falling back to the
+        regular connection host, the first ``SaveFilePart`` is wrapped with
+        upload-specific ``InitConnection.params`` so the socket is classified as
+        upload-only.  This keeps the change local to uploads and leaves the main
+        WebSocket connection, realtime events, auth and message sending
+        untouched.
         """
         from splusthon.tl.alltlobjects import LAYER  # type: ignore
+
+        if getattr(sender, "_soropy_upload_direct", False):
+            return await self._client._call(sender, request)
 
         if getattr(sender, "_soropy_upload_initialized", False):
             return await self._client._call(sender, request)
@@ -1057,6 +1101,7 @@ class MtprotoEngine:
         safe_name: str,
         file_size: int,
         part_size_kb: float = 512,
+        host_index: int = 0,
         profile_index: int = 0,
     ) -> Any:
         """Upload file bytes through a dedicated upload connection.
@@ -1068,7 +1113,10 @@ class MtprotoEngine:
         with the actual file-part RPC.
         """
         try:
-            upload_sender = await self._ensure_upload_sender(profile_index)
+            upload_sender = await self._ensure_upload_sender(
+                host_index=host_index,
+                profile_index=profile_index,
+            )
         except Exception as exc:
             # If upload sender creation failed because this is a fake test
             # client or an incompatible SPlusthon object, keep old test
@@ -1134,7 +1182,10 @@ class MtprotoEngine:
         extension = os.path.splitext(clean_path)[1].lower()
         as_document = bool(force_document or extension not in _IMAGE_EXTENSIONS)
 
-        async def _send_via_upload_connection(profile_index: int = 0):
+        async def _send_via_upload_connection(
+            host_index: int = 0,
+            profile_index: int = 0,
+        ):
             """Upload on a dedicated upload connection, then send via main."""
             target = await self._resolve(entity)
 
@@ -1146,6 +1197,7 @@ class MtprotoEngine:
                 safe_name=safe_name,
                 file_size=len(payload),
                 part_size_kb=512,
+                host_index=host_index,
                 profile_index=profile_index,
             )
 
@@ -1167,9 +1219,30 @@ class MtprotoEngine:
 
         async def _send_with_retry():
             last_error: Optional[BaseException] = None
+            # Try known upload/file hosts directly (no InitConnection wrapper).
+            for host_index in range(len(UPLOAD_SERVER_HOSTS)):
+                try:
+                    return await _send_via_upload_connection(
+                        host_index=host_index,
+                        profile_index=0,
+                    )
+                except Exception as exc:
+                    if not _is_upload_connection_error(exc):
+                        raise
+                    last_error = exc
+                    logger.warning(
+                        "Upload 422 on host %s; retrying %s with a fresh upload connection",
+                        UPLOAD_SERVER_HOSTS[host_index],
+                        safe_name,
+                    )
+                    await self._invalidate_upload_sender()
+            # Fallback: regular host with upload-only connection profiles.
             for profile_index in range(len(_UPLOAD_CONNECTION_PROFILES)):
                 try:
-                    return await _send_via_upload_connection(profile_index)
+                    return await _send_via_upload_connection(
+                        host_index=len(UPLOAD_SERVER_HOSTS),
+                        profile_index=profile_index,
+                    )
                 except Exception as exc:
                     if not _is_upload_connection_error(exc):
                         raise
