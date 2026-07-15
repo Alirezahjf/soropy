@@ -28,6 +28,7 @@ REQUIRED_SDIST_FILES = (
     "examples/websocket/support_desk_bot.py",
     "examples/websocket/campaign_broadcaster.py",
     "examples/websocket/event_audit_logger.py",
+    "examples/websocket/send_file_interactive.py",
 )
 
 
