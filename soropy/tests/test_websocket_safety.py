@@ -40,6 +40,8 @@ class FakeClient:
         self.sent_file = None
         self.permission_kwargs = None
         self.admin_kwargs = None
+        # Allow _sender swap for upload connection tests
+        self._sender = SimpleNamespace(is_connected=lambda: True)
 
     def is_connected(self):
         return True
@@ -220,19 +222,17 @@ def test_upload_422_reconnects_and_retries_once(tmp_path):
         def __init__(self):
             super().__init__()
             self.attempts = 0
-            self.reconnects = 0
 
-        async def send_file(self, target, uploaded, **kwargs):
+        async def upload_file(self, stream, **kwargs):
             self.attempts += 1
             if self.attempts == 1:
                 raise RuntimeError("RPCError 422: FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER")
+            self.upload = (stream.read(), stream.name, kwargs)
+            return "uploaded"
+
+        async def send_file(self, target, uploaded, **kwargs):
+            self.sent_file = (target, uploaded, kwargs)
             return SimpleNamespace(id=13, chat_id=35)
-
-        async def disconnect(self):
-            return None
-
-        async def connect(self):
-            self.reconnects += 1
 
     fake = RetryClient()
     engine = make_engine(tmp_path, fake)
@@ -241,8 +241,8 @@ def test_upload_422_reconnects_and_retries_once(tmp_path):
 
     result = engine.send_file("chat", str(path))
     assert result["id"] == 13
+    # First upload_file call raises 422, second succeeds via retry
     assert fake.attempts == 2
-    assert fake.reconnects == 1
 
 
 def test_ban_uses_false_and_promote_only_passes_supported_kwargs(tmp_path):

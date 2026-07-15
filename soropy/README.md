@@ -1,6 +1,6 @@
 <div align="center">
 
-# SoroPy 1.3.4 🚀
+# SoroPy 1.3.5 🚀
 
 **کتابخانهٔ حرفه‌ای Python برای سروش‌پلاس با دو backend مستقل: Selenium و WebSocket/MTProto**
 
@@ -40,7 +40,7 @@ SoroPy یک API واحد و sync به شما می‌دهد تا بدون درگ�
 - WebSocket / MTProto برای اجرای سبک، realtime، بدون Chrome و مناسب server.
 - auto-reply امن با پیش‌فرض فقط PV.
 - مدیریت چند اکانت، session پایدار، contact، media و moderation.
-- مثال‌های آمادهٔ 1.3.4 برای مدیر گروه، AI، cookbook کامل، میز پشتیبانی، کمپین امن و audit logger.
+- مثال‌های آمادهٔ 1.3.5 برای مدیر گروه، AI، cookbook کامل، میز پشتیبانی، کمپین امن، audit logger و ارسال تعاملی فایل.
 
 ## جدول مقایسه Selenium و WebSocket
 
@@ -133,9 +133,49 @@ handlerهای کاربر خارج از thread دریافت MTProto اجرا می
 | میز پشتیبانی ticket-based | [`support_desk_bot.py`](soropy/examples/websocket/support_desk_bot.py) | تبدیل PV به ticket، اعلان به گروه اپراتورها، assign/close/stats |
 | کمپین پیام‌رسانی امن | [`campaign_broadcaster.py`](soropy/examples/websocket/campaign_broadcaster.py) | dry-run پیش‌فرض، CSV هدف، template و confirm اجباری برای ارسال واقعی |
 | Audit logger رویدادها | [`event_audit_logger.py`](soropy/examples/websocket/event_audit_logger.py) | JSONL امن با sanitize فیلدهای حساس و گزارش خلاصه |
+| ارسال تعاملی فایل/عکس | [`send_file_interactive.py`](soropy/examples/websocket/send_file_interactive.py) | انتخاب چت با @username/chat_id، fallback هوشمند، کپشن و force_document |
 | راهنمای مثال‌ها | [`examples/websocket/README.md`](soropy/examples/websocket/README.md) | نصب، env، امنیت، AI، moderation، پشتیبانی، کمپین و MultiAccount |
 
-راهنمای مستندات: [`docs/WEBSOCKET_EXAMPLES.md`](docs/WEBSOCKET_EXAMPLES.md)
+### snippet ارسال تعاملی فایل/عکس
+
+```bash
+pip install "soropy[ws]"
+python -m examples.websocket.send_file_interactive
+```
+
+```text
+📤 ارسال تعاملی فایل/عکس با SoroPy WebSocket
+======================================================================
+شماره تلفن [09123456789]: 09123456789
+🔐 در حال ورود...
+✅ ورود موفق
+📥 در حال دریافت چت‌ها با id/username...
+====================================================================================================
+📋 لیست چت‌ها
+====================================================================================================
+   1. [PV     ] سروش+ | target=777000
+   2. [CHANNEL] پیام‌رسان سروش‌پلاس | target=@soroushplus
+   3. [GROUP  ] انجمن توسعه‌دهندگان | SoroPy | target=@soropy
+   4. [PV     ] مدیر جوون | target=@Mr_hjf
+====================================================================================================
+شماره چت‌ها را وارد کن: 3,4
+✅ چت‌های انتخاب‌شده:
+  3. [GROUP] انجمن توسعه‌دهندگان | SoroPy | target=@soropy
+  4. [PV] مدیر جوون | target=@Mr_hjf
+تأیید انتخاب؟ (Y/n): y
+مسیر فایل/عکس را وارد کن: report.pdf
+کپشن فایل، اگر نمی‌خواهی خالی بگذار: گزارش ماهانه
+فایل حتماً به صورت document ارسال شود؟ (y/N): y
+ارسال شروع شود؟ (y/N): y
+🚀 شروع ارسال
+```
+
+ویژگی مهم: برای ارسال، اولویت با `@username` یا `chat_id` است، نه اسم چت. این باعث می‌شود خطای **Entity not found** برای گروه‌ها کمتر شود. اگر target اصلی fail شد، fallback به ترتیب `@username → chat_id → name` امتحان می‌شود.
+
+> [!NOTE]
+> از نسخه 1.3.5 ارسال فایل از یک **اتصال اختصاصی آپلود** استفاده می‌کند. سرور سروش پلاس `SaveFilePartRequest` را فقط روی اتصالی که با `params={"connection": "upload"}` مقداردهی شده قبول می‌کند. SoroPy به‌طور خودکار این اتصال دوم را مدیریت می‌کند.
+
+### راهنمای مستندات: [`docs/WEBSOCKET_EXAMPLES.md`](docs/WEBSOCKET_EXAMPLES.md)
 
 ### snippet کوتاه مدیر گروه
 
@@ -282,6 +322,7 @@ python interactive_manager.py
 | `requires 'splusthon'` | `pip install "soropy[ws]"` |
 | `Unclosed client session` | همیشه `client.close()` یا context manager. |
 | `CHAT_ADMIN_REQUIRED` | دسترسی ادمین ندارید یا target گروه/کانال اشتباه است. |
+| `FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER` (422) | از نسخه 1.3.5 این خطا به‌طور خودکار رفع شده (اتصال اختصاصی آپلود). اگر همچنان رخ داد، `pip install --upgrade soropy` را اجرا کنید. |
 | auto-reply جواب نمی‌دهد | rule/default، listener و PV-only را بررسی کنید. |
 | endpoint وصل نمی‌شود | DNS، firewall، VPN/proxy و ساعت سیستم را بررسی کنید. |
 | AI خطا می‌دهد | package و API key همان provider را نصب/تنظیم کنید؛ dependencyهای AI اختیاری‌اند. |
@@ -372,6 +413,6 @@ python scripts/publish_pypi.py --no-upload
 
 <div align="center">
 
-**ساخته‌شده با ❤️ برای جامعهٔ Python فارسی — نسخهٔ 1.3.4**
+**ساخته‌شده با ❤️ برای جامعهٔ Python فارسی — نسخهٔ 1.3.5**
 
 </div>
