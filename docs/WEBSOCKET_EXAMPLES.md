@@ -1,4 +1,4 @@
-# مثال‌های کاربردی WebSocket در SoroPy 1.3.4
+# مثال‌های کاربردی WebSocket در SoroPy 1.3.6
 
 این سند نقطهٔ شروع سریع برای مثال‌های آمادهٔ WebSocket / MTProto است.
 

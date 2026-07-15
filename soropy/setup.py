@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="soropy",
-    version="1.3.5",
+    version="1.3.6",
     packages=find_packages(),
     install_requires=[
         "selenium>=4.10.0",
@@ -29,7 +29,6 @@ setup(
     url="https://github.com/Alirezahjf/soropy",
     classifiers=[
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
 )

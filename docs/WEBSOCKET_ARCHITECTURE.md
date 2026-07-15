@@ -1,4 +1,4 @@
-# SoroPy WebSocket / MTProto Architecture — 1.3.4
+# SoroPy WebSocket / MTProto Architecture — 1.3.6
 
 > Endpoint: `wss://im-server.splus.ir:443/apiws`
 > Origin: `https://web.splus.ir`
@@ -156,12 +156,14 @@ EventBus registration thread-safe است. handler کند کاربر ping/receive
 1. حذف کوتیشن اطراف path و بررسی `isfile`
 2. خواندن bytes
 3. ساخت `BytesIO` با نام ASCII-safe و extension اصلی
-4. `upload_file(part_size_kb=512)`
-5. non-image با `force_document=True`
-6. timeout کل 300 ثانیه
-7. روی `FILE_REQUEST_RECEIVED_ON_CONNECTION*` یا RPC 422 یک disconnect/connect و retry
+4. ساخت sender اختصاصی upload بدون دست‌زدن به sender اصلی WebSocket
+5. ارسال اولین `SaveFilePartRequest` واقعی داخل `InvokeWithLayer(InitConnection(..., params=upload))` تا سرور اتصال را upload-only تشخیص دهد
+6. ارسال partهای بعدی روی همان sender اختصاصی و ساخت `InputFile` / `InputFileBig`
+7. ارسال پیام نهایی با file handle روی اتصال اصلی (regular RPC)
+8. non-image با `force_document=True` و timeout کل 300 ثانیه
+9. روی `FILE_REQUEST_RECEIVED_ON_CONNECTION*` یا RPC 422، sender آپلود invalidate می‌شود و با profile بعدی metadata یک retry کنترل‌شده انجام می‌شود
 
-این retry فقط یک بار است تا loop نامحدود یا ارسال تکراری رخ ندهد.
+این retry محدود است تا loop نامحدود یا ارسال تکراری رخ ندهد؛ اتصال اصلی پیام‌ها، listener و login دست‌نخورده باقی می‌مانند.
 
 ## 8. entity resolution
 
@@ -169,7 +171,7 @@ EventBus registration thread-safe است. handler کند کاربر ping/receive
 
 ## 9. dependency policy
 
-نسخهٔ 1.3.3 از این بازه استفاده می‌کند:
+نسخهٔ 1.3.6 از این بازه استفاده می‌کند:
 
 ```text
 splusthon>=1.1.2,<1.1.3
@@ -242,7 +244,7 @@ splusthon>=1.1.2,<1.1.3
 
 ## 13. مثال‌های کاربردی
 
-در نسخهٔ 1.3.4 یک مجموعهٔ مستقل از مثال‌های production-oriented برای WebSocket اضافه شده است:
+در نسخهٔ 1.3.6 یک مجموعهٔ مستقل از مثال‌های production-oriented برای WebSocket اضافه شده است:
 
 | فایل | کاربرد |
 |---|---|
