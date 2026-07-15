@@ -11,6 +11,7 @@ expose a sync façade for :class:`WebSocketBackend`.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import inspect
 import os
@@ -211,6 +212,16 @@ _IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff",
 }
 
+# Soroush Plus has historically identified upload-only MTProto sessions by
+# connection metadata sent with InitConnection.  Keep the list narrow and use it
+# only for media upload retries so normal WebSocket messaging remains untouched.
+_UPLOAD_CONNECTION_PROFILES = (
+    (("connection", "upload"),),
+    (("connection_type", "upload"),),
+    (("connectionType", "upload"),),
+    (("type", "upload"),),
+)
+
 
 class MtprotoEngine:
     """
@@ -260,11 +271,12 @@ class MtprotoEngine:
         self._ambiguous_names = set()
         # chat id/name → personal|group|channel
         self._kind_cache: Dict[str, str] = {}
-        # Dedicated MTProto sender for file uploads (init with upload params
-        # so the server treats this connection as an upload connection and
-        # accepts SaveFilePartRequest instead of rejecting it with
-        # FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER / RPCError 422).
+        # Dedicated MTProto sender for file uploads.  The first file-part RPC
+        # on this sender is wrapped with upload params so the server treats the
+        # socket as upload-only and does not reject SaveFilePartRequest with
+        # FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER / RPCError 422.
         self._upload_sender: Any = None
+        self._upload_sender_profile: Optional[int] = None
 
     def _remember_entity(
         self,
@@ -548,6 +560,7 @@ class MtprotoEngine:
         # Close the dedicated upload sender first
         upload_sender = self._upload_sender
         self._upload_sender = None
+        self._upload_sender_profile = None
 
         client = self._client
         runner = self._runner
@@ -557,30 +570,7 @@ class MtprotoEngine:
 
         if upload_sender is not None and runner.is_running:
             try:
-                # Also close any aiohttp sessions owned by the upload sender's
-                # WebSocket connection to prevent "Unclosed client session" leaks.
-                async def _close_upload_sender():
-                    try:
-                        await upload_sender.disconnect()
-                    except Exception as exc:
-                        logger.debug("upload sender disconnect: %s", exc)
-                    # Close the WebSocket connection's cached aiohttp session
-                    conn = getattr(upload_sender, "_connection", None)
-                    if conn is not None:
-                        cached = getattr(conn, "_cached_session", None)
-                        if cached is not None and not bool(getattr(cached, "closed", False)):
-                            try:
-                                await cached.close()
-                            except Exception:
-                                pass
-                        session = getattr(conn, "_session", None)
-                        if session is not None and session is not cached and not bool(getattr(session, "closed", False)):
-                            try:
-                                await session.close()
-                            except Exception:
-                                pass
-
-                runner.run(_close_upload_sender(), timeout=10)
+                runner.run(self._disconnect_upload_sender(upload_sender), timeout=10)
             except Exception as exc:
                 logger.debug("upload sender cleanup error: %s", exc)
 
@@ -818,50 +808,38 @@ class MtprotoEngine:
 
     # ── upload connection ──────────────────────────────
 
-    async def _ensure_upload_sender(self) -> Any:
-        """Create (or return) a dedicated MTProto sender for file uploads.
+    def _make_upload_init_request(self, query: Any, profile_index: int = 0) -> Any:
+        """Wrap an upload RPC in an upload-flavoured InitConnection.
 
-        The Soroush Plus server requires ``upload.SaveFilePartRequest`` to be
-        sent on a connection that was initialized with
-        ``params={"connection": "upload"}`` in the ``InitConnectionRequest``.
-        Without this flag the server returns
-        ``FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER`` (RPCError 422).
-
-        This method lazily creates a second WebSocket/MTProto connection to
-        the same DC, re-uses the existing auth key (no re-login needed), and
-        keeps the sender alive for reuse across multiple uploads.
+        Soroush Plus rejects ``upload.SaveFilePartRequest`` on a regular
+        connection with ``FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER``.  The
+        official web client opens a media/upload-only MTProto session and sends
+        upload metadata in ``InitConnection.params``.  We apply that metadata to
+        the actual SaveFilePart request (instead of pre-initialising the sender
+        with an unrelated GetConfig request) so the first RPC seen by the server
+        on this sender is already an upload RPC.
         """
-        if self._upload_sender is not None and self._upload_sender.is_connected():
-            return self._upload_sender
-
-        await self._invalidate_upload_sender()
-
-        from splusthon.network import MTProtoSender, ConnectionWebSocket  # type: ignore
-        from splusthon.tl.alltlobjects import LAYER  # type: ignore
+        profile = _UPLOAD_CONNECTION_PROFILES[
+            profile_index % len(_UPLOAD_CONNECTION_PROFILES)
+        ]
+        params = _sp_types.JsonObject(
+            value=[
+                _sp_types.JsonObjectValue(
+                    key=key,
+                    value=_sp_types.JsonString(value=value),
+                )
+                for key, value in profile
+            ]
+        )
 
         client = self._client
-        if client is None:
-            raise TransportError("Cannot create upload sender: no main client")
-
-        # Build the upload-specific InitConnectionRequest.
-        # The ``params`` field tells the server this connection is for file
-        # uploads, so it accepts SaveFilePartRequest / SaveBigFilePartRequest.
-        upload_params = _sp_types.JsonObject(value=[
-            _sp_types.JsonObjectValue(
-                key="connection",
-                value=_sp_types.JsonString(value="upload"),
-            ),
-        ])
-
-        # Read init-request parameters from the main client.  Guard against
-        # test fakes that may not have the full SPlusthon attribute set.
         init_req = getattr(client, "_init_request", None)
-        if init_req is None:
+        if client is None or init_req is None:
             raise TransportError(
-                "Cannot create upload sender: client has no _init_request"
+                "Cannot create upload init request: client has no _init_request"
             )
 
-        init_request = _sp_functions.InitConnectionRequest(
+        return _sp_functions.InitConnectionRequest(
             api_id=getattr(client, "api_id", SPLUS_API_ID),
             device_model=getattr(init_req, "device_model", "SoroPy"),
             system_version=getattr(init_req, "system_version", "1.0"),
@@ -869,12 +847,35 @@ class MtprotoEngine:
             lang_code=getattr(init_req, "lang_code", SPLUS_LANG),
             system_lang_code=getattr(init_req, "system_lang_code", SPLUS_LANG),
             lang_pack=getattr(init_req, "lang_pack", ""),
-            query=_sp_functions.help.GetConfigRequest(),
+            query=query,
             proxy=getattr(init_req, "proxy", None),
-            params=upload_params,
+            params=params,
         )
 
-        # Create a new MTProtoSender with the *same* auth key — no re-login.
+    async def _ensure_upload_sender(self, profile_index: int = 0) -> Any:
+        """Create (or return) a dedicated MTProto sender for file uploads.
+
+        The sender is intentionally *not* pre-initialised with ``GetConfig``.
+        On Soroush Plus, doing so can classify the socket as a normal
+        connection and the subsequent ``SaveFilePartRequest`` fails with
+        RPC 422.  The upload RPC itself is wrapped in ``InitConnection`` by
+        :meth:`_call_upload_sender`.
+        """
+        if (
+            self._upload_sender is not None
+            and self._upload_sender_profile == profile_index
+            and self._upload_sender.is_connected()
+        ):
+            return self._upload_sender
+
+        await self._invalidate_upload_sender()
+
+        from splusthon.network import MTProtoSender  # type: ignore
+
+        client = self._client
+        if client is None:
+            raise TransportError("Cannot create upload sender: no main client")
+
         sender = MTProtoSender(
             client.session.auth_key,
             loggers=client._log,
@@ -884,7 +885,6 @@ class MtprotoEngine:
             connect_timeout=client._timeout,
         )
 
-        # Open a second WebSocket connection to the same server.
         connection = client._connection(
             client.session.server_address,
             client.session.port,
@@ -894,49 +894,162 @@ class MtprotoEngine:
             local_addr=client._local_addr,
         )
 
-        await sender.connect(connection)
-
-        # Initialize the connection with the upload-flagged InitConnection.
-        # The response may fail to parse (Soroush custom config types) but
-        # that is harmless — the server already registered this as an upload
-        # connection.
         try:
-            layer_req = _sp_functions.InvokeWithLayerRequest(LAYER, init_request)
-            future = sender.send(layer_req)
-            import asyncio
-            await asyncio.wait_for(future, timeout=30)
-        except Exception as exc:
-            # TypeNotFoundError / BufferError are expected because Soroush
-            # sends custom config types that SPlusthon can't parse.
-            # The connection is still valid as an upload connection.
-            exc_upper = f"{type(exc).__name__}: {exc}".upper()
-            if any(t in exc_upper for t in (
-                "TYPENOTFOUND", "BUFFER", "INTERNAL_SERVER",
-            )):
-                logger.debug(
-                    "Upload connection init response parse error (expected): %s", exc
-                )
-            else:
-                logger.warning("Upload connection init failed: %s", exc)
-                try:
-                    await sender.disconnect()
-                except Exception:
-                    pass
-                raise
+            await sender.connect(connection)
+        except Exception:
+            await self._disconnect_upload_sender(sender)
+            raise
 
-        logger.info("Upload MTProto sender connected for %s", self._phone)
+        logger.info(
+            "Upload MTProto sender connected for %s (profile=%s)",
+            self._phone,
+            profile_index,
+        )
         self._upload_sender = sender
+        self._upload_sender_profile = profile_index
         return sender
+
+    async def _disconnect_upload_sender(self, sender: Any) -> None:
+        """Disconnect an upload sender and close its aiohttp session cache."""
+        if sender is None:
+            return
+        conn = getattr(sender, "_connection", None)
+        try:
+            await sender.disconnect()
+        except Exception as exc:
+            logger.debug("upload sender disconnect: %s", exc)
+
+        # SPlusthon's ConnectionWebSocket keeps a per-instance cached
+        # ClientSession for reconnects.  Upload senders are short-lived during
+        # retries, so close the cache explicitly to avoid aiohttp
+        # "Unclosed client session" warnings.
+        if conn is not None:
+            for attr in ("_cached_session", "_session"):
+                session = getattr(conn, attr, None)
+                if session is not None and not bool(getattr(session, "closed", False)):
+                    try:
+                        await session.close()
+                    except Exception as exc:
+                        logger.debug("upload sender aiohttp close: %s", exc)
+            try:
+                setattr(conn, "_cached_session", None)
+                setattr(conn, "_cached_session_key", None)
+            except Exception:
+                pass
 
     async def _invalidate_upload_sender(self) -> None:
         """Disconnect and discard the cached upload sender."""
         sender = self._upload_sender
         self._upload_sender = None
-        if sender is not None:
-            try:
-                await sender.disconnect()
-            except Exception as exc:
-                logger.debug("upload sender disconnect: %s", exc)
+        self._upload_sender_profile = None
+        await self._disconnect_upload_sender(sender)
+
+    async def _call_upload_sender(
+        self,
+        sender: Any,
+        request: Any,
+        profile_index: int,
+    ) -> Any:
+        """Send one upload RPC through the upload sender.
+
+        The first ``SaveFilePart`` on a fresh upload sender is wrapped with
+        upload-specific ``InitConnection.params``; later parts use the same
+        already-classified upload socket directly.  This keeps the change local
+        to uploads and leaves the main WebSocket connection, realtime events,
+        auth and message sending untouched.
+        """
+        from splusthon.tl.alltlobjects import LAYER  # type: ignore
+
+        if getattr(sender, "_soropy_upload_initialized", False):
+            return await self._client._call(sender, request)
+
+        init_request = self._make_upload_init_request(request, profile_index)
+        wrapped = _sp_functions.InvokeWithLayerRequest(LAYER, init_request)
+        result = await self._client._call(sender, wrapped)
+        try:
+            setattr(sender, "_soropy_upload_initialized", True)
+        except Exception:
+            pass
+        return result
+
+    async def _manual_upload_file_on_sender(
+        self,
+        sender: Any,
+        stream: io.BytesIO,
+        safe_name: str,
+        file_size: int,
+        profile_index: int,
+        part_size_kb: float = 512,
+    ) -> Any:
+        """Upload bytes by sending SaveFilePart through the upload sender."""
+        from splusthon import helpers as _sp_helpers  # type: ignore
+        from splusthon.tl import custom as _sp_custom  # type: ignore
+
+        if not part_size_kb:
+            part_size_kb = 512
+        if part_size_kb > 512:
+            raise ValueError("The part size must be less or equal to 512KB")
+        part_size = int(part_size_kb * 1024)
+        if part_size <= 0 or part_size % 1024 != 0:
+            raise ValueError("The part size must be evenly divisible by 1024")
+
+        file_id = _sp_helpers.generate_random_long()
+        part_count = (file_size + part_size - 1) // part_size or 1
+        is_big = file_size > 10 * 1024 * 1024
+        hash_md5 = hashlib.md5()
+
+        logger.info(
+            "Uploading file of %d bytes in %d chunks of %d",
+            file_size,
+            part_count,
+            part_size,
+        )
+
+        stream.seek(0)
+        for part_index in range(part_count):
+            part = stream.read(part_size)
+            if not isinstance(part, bytes):
+                raise TypeError(
+                    "file descriptor returned non-bytes data during upload"
+                )
+            if len(part) != part_size and part_index < part_count - 1:
+                raise ValueError(
+                    f"read less than {part_size} before reaching the end"
+                )
+            if not is_big:
+                hash_md5.update(part)
+
+            if is_big:
+                request = _sp_functions.upload.SaveBigFilePartRequest(
+                    file_id,
+                    part_index,
+                    part_count,
+                    part,
+                )
+            else:
+                request = _sp_functions.upload.SaveFilePartRequest(
+                    file_id,
+                    part_index,
+                    part,
+                )
+
+            result = await self._call_upload_sender(
+                sender,
+                request,
+                profile_index=profile_index,
+            )
+            if result is False:
+                raise RuntimeError(f"Failed to upload file part {part_index}.")
+
+        if is_big:
+            return _sp_types.InputFileBig(file_id, part_count, safe_name)
+        return _sp_custom.InputSizedFile(
+            file_id,
+            part_count,
+            safe_name,
+            md5=hash_md5,
+            size=file_size,
+        )
 
     async def _upload_file_on_upload_connection(
         self,
@@ -944,26 +1057,29 @@ class MtprotoEngine:
         safe_name: str,
         file_size: int,
         part_size_kb: float = 512,
+        profile_index: int = 0,
     ) -> Any:
         """Upload file bytes through a dedicated upload connection.
 
-        Temporarily swaps ``self._client._sender`` with the upload sender so
-        that ``self._client.upload_file()`` routes all SaveFilePartRequest
-        calls through the upload connection.  The original sender is always
-        restored in a ``finally`` block.
-
-        If the upload sender cannot be created (e.g. during unit tests with
-        mock clients that lack the full SPlusthon interface), falls back to
-        calling ``upload_file`` on the main client directly.
+        Falls back to SPlusthon's ``upload_file`` only when the real upload
+        sender cannot be constructed (mostly unit-test fakes or incompatible
+        SPlusthon internals).  Real network uploads use the manual path above so
+        the main sender is never swapped and upload-only init metadata is sent
+        with the actual file-part RPC.
         """
         try:
-            upload_sender = await self._ensure_upload_sender()
+            upload_sender = await self._ensure_upload_sender(profile_index)
         except Exception as exc:
-            # If we can't create the upload sender (e.g. test fakes, missing
-            # attributes), fall back to the main client's upload_file.
+            # If upload sender creation failed because this is a fake test
+            # client or an incompatible SPlusthon object, keep old test
+            # compatibility.  Once a real upload sender exists, do not fall
+            # back to the main connection because that is the path known to
+            # trigger RPC 422 on Soroush Plus.
             logger.debug(
-                "Could not create upload sender, using main client: %s", exc
+                "Could not create dedicated upload sender, using client.upload_file: %s",
+                exc,
             )
+            stream.seek(0)
             return await self._client.upload_file(
                 stream,
                 part_size_kb=part_size_kb,
@@ -971,23 +1087,18 @@ class MtprotoEngine:
                 file_name=safe_name,
             )
 
-        original_sender = self._client._sender
-        self._client._sender = upload_sender
         try:
-            uploaded = await self._client.upload_file(
+            return await self._manual_upload_file_on_sender(
+                upload_sender,
                 stream,
-                part_size_kb=part_size_kb,
+                safe_name=safe_name,
                 file_size=file_size,
-                file_name=safe_name,
+                profile_index=profile_index,
+                part_size_kb=part_size_kb,
             )
         except Exception:
-            # Upload sender may be broken; discard it so next attempt rebuilds.
             await self._invalidate_upload_sender()
             raise
-        finally:
-            self._client._sender = original_sender
-
-        return uploaded
 
     def send_file(
         self,
@@ -1003,8 +1114,10 @@ class MtprotoEngine:
         data connections with ``FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER``
         (RPCError 422).  This method opens a second MTProto connection
         initialised with ``params={"connection": "upload"}`` so the server
-        accepts the upload, then sends the resulting file via the main
-        connection.
+        accepts the upload.  The file-part RPC itself is wrapped in that
+        upload-flavoured InitConnection so the socket is not accidentally
+        classified as a normal connection, then the resulting file handle is
+        sent via the main connection.
         """
         self._ensure()
         clean_path = os.path.expanduser(str(path or "").strip().strip('"').strip("'"))
@@ -1021,7 +1134,7 @@ class MtprotoEngine:
         extension = os.path.splitext(clean_path)[1].lower()
         as_document = bool(force_document or extension not in _IMAGE_EXTENSIONS)
 
-        async def _send_via_upload_connection():
+        async def _send_via_upload_connection(profile_index: int = 0):
             """Upload on a dedicated upload connection, then send via main."""
             target = await self._resolve(entity)
 
@@ -1033,6 +1146,7 @@ class MtprotoEngine:
                 safe_name=safe_name,
                 file_size=len(payload),
                 part_size_kb=512,
+                profile_index=profile_index,
             )
 
             # Step 2: send the message with the uploaded handle on the main
@@ -1052,20 +1166,22 @@ class MtprotoEngine:
             }
 
         async def _send_with_retry():
-            try:
-                return await _send_via_upload_connection()
-            except Exception as exc:
-                if not _is_upload_connection_error(exc):
-                    raise
-                # The upload sender is invalidated inside
-                # _upload_file_on_upload_connection on error.  Discard it and
-                # retry once with a fresh upload connection.
-                logger.warning(
-                    "Upload 422 on first attempt; retrying with fresh upload connection for %s",
-                    safe_name,
-                )
-                await self._invalidate_upload_sender()
-                return await _send_via_upload_connection()
+            last_error: Optional[BaseException] = None
+            for profile_index in range(len(_UPLOAD_CONNECTION_PROFILES)):
+                try:
+                    return await _send_via_upload_connection(profile_index)
+                except Exception as exc:
+                    if not _is_upload_connection_error(exc):
+                        raise
+                    last_error = exc
+                    logger.warning(
+                        "Upload 422 with upload profile %s; retrying %s with a fresh upload connection",
+                        profile_index,
+                        safe_name,
+                    )
+                    await self._invalidate_upload_sender()
+            assert last_error is not None
+            raise last_error
 
         return self._runner.run(_send_with_retry(), timeout=300)
 

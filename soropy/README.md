@@ -1,6 +1,6 @@
 <div align="center">
 
-# SoroPy 1.3.5 🚀
+# SoroPy 1.3.6 🚀
 
 **کتابخانهٔ حرفه‌ای Python برای سروش‌پلاس با دو backend مستقل: Selenium و WebSocket/MTProto**
 
@@ -19,6 +19,17 @@
 > [!IMPORTANT]
 > backend وب‌سوکت از API رسمی عمومی استفاده نمی‌کند؛ SPlusthon یک کلاینت شخص ثالث MTProto است. قوانین و محدودیت‌های سروش‌پلاس را رعایت کنید، روی حساب/گروه آزمایشی تست بگیرید و شماره، کد SMS، API key یا فایل session را منتشر نکنید.
 
+
+## تغییرات اخیر 1.3.6
+
+- رفع مسیر ارسال فایل WebSocket برای خطای `RPCError 422: FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER` بدون دست‌زدن به اتصال اصلی پیام‌ها، دریافت realtime، login یا event loop. آپلود اکنون روی sender اختصاصی انجام می‌شود و اولین درخواست واقعی `SaveFilePart` با metadata آپلود مقداردهی می‌شود.
+- جلوگیری بهتر از هشدارهای `Unclosed client session` هنگام fail/retry آپلود با بستن cache داخلی aiohttp برای senderهای کوتاه‌عمر آپلود.
+- به‌روزرسانی مثال [`send_file_interactive.py`](soropy/examples/websocket/send_file_interactive.py): قبل از اجرا SoroPy `1.3.6+` و dependencyهای WebSocket را بررسی می‌کند و در صورت نیاز از local source، PyPI یا GitHub آپدیت می‌کند.
+- نسخه پکیج و مستندات به `1.3.6` ارتقا یافت، metadata مجوز PyPI با setuptools جدید سازگار شد و روش نصب پیشنهادی به `python -m pip install --upgrade "soropy[ws]>=1.3.6"` تغییر کرد.
+
+لینک‌های مرتبط: [چرا SoroPy؟](#چرا-soropy) · [نصب](#نصب-pypi) · [ارسال تعاملی فایل](#snippet-ارسال-تعاملی-فایلعکس) · [Troubleshooting](#troubleshooting)
+
+---
 ## دسترسی سریع
 
 - [چرا SoroPy؟](#چرا-soropy)
@@ -40,7 +51,7 @@ SoroPy یک API واحد و sync به شما می‌دهد تا بدون درگ�
 - WebSocket / MTProto برای اجرای سبک، realtime، بدون Chrome و مناسب server.
 - auto-reply امن با پیش‌فرض فقط PV.
 - مدیریت چند اکانت، session پایدار، contact، media و moderation.
-- مثال‌های آمادهٔ 1.3.5 برای مدیر گروه، AI، cookbook کامل، میز پشتیبانی، کمپین امن، audit logger و ارسال تعاملی فایل.
+- مثال‌های آمادهٔ 1.3.6 برای مدیر گروه، AI، cookbook کامل، میز پشتیبانی، کمپین امن، audit logger و ارسال تعاملی فایل.
 
 ## جدول مقایسه Selenium و WebSocket
 
@@ -67,10 +78,13 @@ Selenium همچنان backend پیش‌فرض است؛ کدهای قدیمی ب�
 
 ```bash
 # هسته و Selenium
-pip install soropy
+python -m pip install --upgrade "soropy>=1.3.6"
 
-# WebSocket / MTProto
-pip install "soropy[ws]"
+# WebSocket / MTProto (پیشنهادی برای مثال‌های این پوشه)
+python -m pip install --upgrade "soropy[ws]>=1.3.6"
+
+# بررسی نسخه
+python -c "import soropy; print(soropy.__version__)"
 ```
 
 extra وب‌سوکت شامل `splusthon>=1.1.2,<1.1.3`، `aiohttp`، `pyaes` و `rsa` است. dependencyهای AI عمداً dependency اصلی نیستند و فقط در مثال AI به‌صورت lazy import می‌شوند.
@@ -79,7 +93,7 @@ extra وب‌سوکت شامل `splusthon>=1.1.2,<1.1.3`، `aiohttp`، `pyaes` �
 
 ```bash
 pip uninstall soropy -y
-pip install "soropy[ws] @ git+https://github.com/Alirezahjf/soropy.git@main#subdirectory=soropy"
+python -m pip install --upgrade "soropy[ws] @ git+https://github.com/Alirezahjf/soropy.git@main#subdirectory=soropy"
 python -c "import soropy; print(soropy.__version__)"
 ```
 
@@ -139,7 +153,7 @@ handlerهای کاربر خارج از thread دریافت MTProto اجرا می
 ### snippet ارسال تعاملی فایل/عکس
 
 ```bash
-pip install "soropy[ws]"
+python -m pip install --upgrade "soropy[ws]>=1.3.6"
 python -m examples.websocket.send_file_interactive
 ```
 
@@ -173,7 +187,7 @@ python -m examples.websocket.send_file_interactive
 ویژگی مهم: برای ارسال، اولویت با `@username` یا `chat_id` است، نه اسم چت. این باعث می‌شود خطای **Entity not found** برای گروه‌ها کمتر شود. اگر target اصلی fail شد، fallback به ترتیب `@username → chat_id → name` امتحان می‌شود.
 
 > [!NOTE]
-> از نسخه 1.3.5 ارسال فایل از یک **اتصال اختصاصی آپلود** استفاده می‌کند. سرور سروش پلاس `SaveFilePartRequest` را فقط روی اتصالی که با `params={"connection": "upload"}` مقداردهی شده قبول می‌کند. SoroPy به‌طور خودکار این اتصال دوم را مدیریت می‌کند.
+> از نسخه 1.3.6 ارسال فایل از یک **اتصال اختصاصی آپلود** استفاده می‌کند. برای جلوگیری از `FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER`، اولین `SaveFilePartRequest` واقعی روی sender تازه با metadata آپلود در `InitConnection.params` ارسال می‌شود و سپس همان sender فقط برای upload استفاده می‌شود. اتصال اصلی پیام‌ها و realtime دست‌نخورده می‌ماند.
 
 ### راهنمای مستندات: [`docs/WEBSOCKET_EXAMPLES.md`](docs/WEBSOCKET_EXAMPLES.md)
 
@@ -319,10 +333,10 @@ python interactive_manager.py
 |---|---|
 | شماره مثل `0912xxxxxxx` | شماره واقعی 11 رقمی مثل `09123456789` بدهید. |
 | `The key is not registered` | `delete_session()` یا گزینهٔ حذف session در منو. |
-| `requires 'splusthon'` | `pip install "soropy[ws]"` |
+| `requires 'splusthon'` | `python -m pip install --upgrade "soropy[ws]>=1.3.6"` |
 | `Unclosed client session` | همیشه `client.close()` یا context manager. |
 | `CHAT_ADMIN_REQUIRED` | دسترسی ادمین ندارید یا target گروه/کانال اشتباه است. |
-| `FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER` (422) | از نسخه 1.3.5 این خطا به‌طور خودکار رفع شده (اتصال اختصاصی آپلود). اگر همچنان رخ داد، `pip install --upgrade soropy` را اجرا کنید. |
+| `FILE_REQUEST_RECEIVED_ON_CONNECTION_SERVER` (422) | از نسخه 1.3.6 این خطا به‌طور خودکار رفع شده (اتصال اختصاصی آپلود). اگر همچنان رخ داد، `python -m pip install --upgrade "soropy[ws]>=1.3.6"` را اجرا کنید. |
 | auto-reply جواب نمی‌دهد | rule/default، listener و PV-only را بررسی کنید. |
 | endpoint وصل نمی‌شود | DNS، firewall، VPN/proxy و ساعت سیستم را بررسی کنید. |
 | AI خطا می‌دهد | package و API key همان provider را نصب/تنظیم کنید؛ dependencyهای AI اختیاری‌اند. |
@@ -379,7 +393,7 @@ cmp -s README.md soropy/README.md
 python scripts/publish_pypi.py --no-upload
 ```
 
-تست endpoint واقعی login/send/receive/upload نیازمند حساب آزمایشی است. پکیج PyPI همچنان با نام `soropy` و extra نصب `pip install "soropy[ws]"` منتشر می‌شود.
+تست endpoint واقعی login/send/receive/upload نیازمند حساب آزمایشی است. پکیج PyPI همچنان با نام `soropy` و extra نصب `python -m pip install --upgrade "soropy[ws]>=1.3.6"` منتشر می‌شود.
 
 ## لایسنس
 
@@ -413,6 +427,6 @@ python scripts/publish_pypi.py --no-upload
 
 <div align="center">
 
-**ساخته‌شده با ❤️ برای جامعهٔ Python فارسی — نسخهٔ 1.3.5**
+**ساخته‌شده با ❤️ برای جامعهٔ Python فارسی — نسخهٔ 1.3.6**
 
 </div>

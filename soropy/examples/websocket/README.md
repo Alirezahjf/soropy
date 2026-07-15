@@ -2,7 +2,7 @@
 
 # 🚀 مثال‌های WebSocket / MTProto در SoroPy
 
-[![SoroPy](https://img.shields.io/badge/SoroPy-1.3.4-blue)](https://pypi.org/project/soropy/)
+[![SoroPy](https://img.shields.io/badge/SoroPy-1.3.6-blue)](https://pypi.org/project/soropy/)
 [![Backend](https://img.shields.io/badge/WebSocket-MTProto-success)](../../README.md)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-yellow)](https://www.python.org/)
 
@@ -22,6 +22,7 @@
 | [`support_desk_bot.py`](support_desk_bot.py) | میز پشتیبانی ticket-based | `python -m examples.websocket.support_desk_bot` |
 | [`campaign_broadcaster.py`](campaign_broadcaster.py) | کمپین پیام‌رسانی امن (dry-run پیش‌فرض) | `python -m examples.websocket.campaign_broadcaster` |
 | [`event_audit_logger.py`](event_audit_logger.py) | Audit logger رویدادها به JSONL | `python -m examples.websocket.event_audit_logger` |
+| [`send_file_interactive.py`](send_file_interactive.py) | ارسال تعاملی فایل/عکس با انتخاب چند چت؛ دارای auto-update به SoroPy 1.3.6+ | `python -m examples.websocket.send_file_interactive` |
 | [`README.md`](README.md) | همین راهنما | — |
 
 ## نصب پایه
@@ -29,7 +30,7 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install "soropy[ws]"
+python -m pip install --upgrade "soropy[ws]>=1.3.6"
 ```
 
 ## مدیر گروه

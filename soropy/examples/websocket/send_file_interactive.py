@@ -6,10 +6,12 @@
   - لیست چت‌ها همراه با id و username از get_dialogs نمایش داده می‌شود.
   - fallback هوشمند: اگر target اصلی fail شد، target‌های دیگر امتحان می‌شوند.
   - کپشن، force_document و فاصله بین ارسال‌ها قابل تنظیم است.
+  - قبل از اجرا مطمئن می‌شود SoroPy 1.3.6+ با extra وب‌سوکت نصب است
+    و در صورت نیاز با چند روش (local source، PyPI، GitHub) آپدیت می‌کند.
 
-نصب:
+نصب پیشنهادی:
 
-    pip install "soropy[ws]"
+    python -m pip install --upgrade "soropy[ws]>=1.3.6"
 
 اجرا:
 
@@ -23,11 +25,124 @@ envها:
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import os
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional, Tuple
+
+REQUIRED_SOROPY_VERSION = "1.3.6"
+GITHUB_INSTALL_SPEC = (
+    "soropy[ws] @ "
+    "git+https://github.com/Alirezahjf/soropy.git@main#subdirectory=soropy"
+)
+
+
+def _version_tuple(value: str) -> Tuple[int, ...]:
+    parts = []
+    for chunk in str(value or "").replace("-", ".").split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        if digits:
+            parts.append(int(digits))
+        else:
+            break
+    return tuple(parts or [0])
+
+
+def _installed_soropy_version() -> Optional[str]:
+    try:
+        return metadata.version("soropy")
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _has_ws_dependencies() -> bool:
+    return importlib.util.find_spec("splusthon") is not None
+
+
+def _run_pip(args: List[str], cwd: Optional[Path] = None) -> bool:
+    cmd = [sys.executable, "-m", "pip", *args]
+    print("🔧 اجرای نصب/آپدیت:", " ".join(cmd))
+    try:
+        subprocess.check_call(cmd, cwd=str(cwd) if cwd else None)
+        importlib.invalidate_caches()
+        return True
+    except Exception as exc:
+        print("⚠️ این روش نصب ناموفق بود:", exc)
+        return False
+
+
+def ensure_latest_soropy() -> None:
+    """Ensure this example runs with SoroPy >= 1.3.6 and ws extras.
+
+    The local source checkout is tried first so running this example from a
+    downloaded repository uses the code next to it.  PyPI and GitHub are used as
+    additional fallbacks.  Set ``SOROPY_SKIP_AUTO_INSTALL=1`` to disable.
+    """
+    if os.getenv("SOROPY_SKIP_AUTO_INSTALL", "").strip().lower() in {"1", "true", "yes"}:
+        return
+
+    installed = _installed_soropy_version()
+    if (
+        installed
+        and _version_tuple(installed) >= _version_tuple(REQUIRED_SOROPY_VERSION)
+        and _has_ws_dependencies()
+    ):
+        return
+
+    print("\n📦 بررسی نسخه SoroPy/WebSocket...")
+    print("نسخه نصب‌شده:", installed or "نصب نیست")
+    print("نسخه لازم برای این مثال:", REQUIRED_SOROPY_VERSION)
+
+    install_attempts: List[Tuple[List[str], Optional[Path]]] = []
+    local_project = Path(__file__).resolve().parents[2]
+    if (local_project / "pyproject.toml").exists():
+        install_attempts.append((["install", "--upgrade", ".[ws]"], local_project))
+
+    install_attempts.extend(
+        [
+            (["install", "--upgrade", f"soropy[ws]>={REQUIRED_SOROPY_VERSION}"], None),
+            (["install", "--upgrade", GITHUB_INSTALL_SPEC], None),
+            (
+                [
+                    "install",
+                    "--upgrade",
+                    "soropy",
+                    "splusthon>=1.1.2,<1.1.3",
+                    "aiohttp>=3.8.0",
+                    "pyaes>=1.6.1",
+                    "rsa>=4.0",
+                ],
+                None,
+            ),
+        ]
+    )
+
+    for args, cwd in install_attempts:
+        if _run_pip(args, cwd=cwd):
+            installed = _installed_soropy_version()
+            if (
+                installed
+                and _version_tuple(installed) >= _version_tuple(REQUIRED_SOROPY_VERSION)
+                and _has_ws_dependencies()
+            ):
+                print("✅ SoroPy به‌روز است:", installed)
+                return
+
+    raise RuntimeError(
+        "SoroPy/WebSocket به نسخه لازم آپدیت نشد. دستی اجرا کنید:\n"
+        f"  {sys.executable} -m pip install --upgrade 'soropy[ws]>={REQUIRED_SOROPY_VERSION}'\n"
+        "یا از داخل سورس پروژه:\n"
+        f"  {sys.executable} -m pip install --upgrade '.[ws]'"
+    )
+
+
+ensure_latest_soropy()
 
 from soropy import SoroushClient
 
