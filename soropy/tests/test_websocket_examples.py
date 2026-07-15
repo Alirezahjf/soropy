@@ -37,16 +37,16 @@ def test_import_websocket_example_modules(module_name):
 def test_warning_store_increment_persistence_summary_clear(tmp_path):
     gm = load_example("group_moderator")
     path = tmp_path / "warnings.json"
-    store = gm.WarningStore(path)
-    assert store.increment("chat", "user", "bad") == 1
-    assert store.increment("chat", "user", "link") == 2
-    assert "user: 2 اخطار" in store.summary("chat")
+    store = gm.ModeratorState(path)
+    assert store.increment_warning("chat", "user", "bad") == 1
+    assert store.increment_warning("chat", "user", "link") == 2
+    assert "2 اخطار" in store.warning_summary("chat")
 
-    reloaded = gm.WarningStore(path)
-    assert reloaded.get("chat", "user") == 2
-    assert reloaded.clear("chat", "user") is True
-    assert reloaded.get("chat", "user") == 0
-    assert "هیچ" in reloaded.summary("chat")
+    reloaded = gm.ModeratorState(path)
+    assert reloaded.warning_count("chat", "user") == 2
+    assert reloaded.clear_warnings("chat", "user") is True
+    assert reloaded.warning_count("chat", "user") == 0
+    assert "هیچ" in reloaded.warning_summary("chat")
 
 
 def test_bad_word_detection():
@@ -57,46 +57,54 @@ def test_bad_word_detection():
 
 def test_disallowed_link_detection():
     gm = load_example("group_moderator")
-    assert gm.contains_disallowed_link("لینک https://bad.example/path", [])
+    assert gm.find_disallowed_link("لینک https://bad.example/path", []) is not None
 
 
 def test_allowed_example_domain():
     gm = load_example("group_moderator")
-    assert not gm.contains_disallowed_link("see https://example.com/page", ["example.com"])
+    assert not gm.find_disallowed_link("see https://example.com/page", ["example.com"])
 
 
 def test_subdomain_allowed_by_allowlist():
     gm = load_example("group_moderator")
-    assert not gm.contains_disallowed_link("https://docs.example.com", ["example.com"])
+    assert not gm.find_disallowed_link("https://docs.example.com", ["example.com"])
 
 
-def test_flood_after_limit():
+def test_flood_after_limit(monkeypatch):
     gm = load_example("group_moderator")
     detector = gm.SlidingWindowCounter(max_count=2, window_seconds=8)
-    assert detector.hit("u", now=1) is False
-    assert detector.hit("u", now=2) is False
-    assert detector.hit("u", now=3) is True
+    fake_time = iter([1, 2, 3])
+    monkeypatch.setattr(gm.time, "time", lambda: next(fake_time))
+    assert detector.hit("u") is False
+    assert detector.hit("u") is False
+    assert detector.hit("u") is True
 
 
-def test_flood_window_expires():
+def test_flood_window_expires(monkeypatch):
     gm = load_example("group_moderator")
     detector = gm.SlidingWindowCounter(max_count=1, window_seconds=2)
-    assert detector.hit("u", now=1) is False
-    assert detector.hit("u", now=4) is False
+    fake_time = iter([1, 4])
+    monkeypatch.setattr(gm.time, "time", lambda: next(fake_time))
+    assert detector.hit("u") is False
+    assert detector.hit("u") is False
 
 
-def test_repeat_after_limit():
+def test_repeat_after_limit(monkeypatch):
     gm = load_example("group_moderator")
     detector = gm.RepeatDetector(max_count=3, window_seconds=30)
-    assert detector.hit("u", "سلام", now=1) is False
-    assert detector.hit("u", "سلام", now=2) is False
-    assert detector.hit("u", "سلام", now=3) is True
+    fake_time = iter([1, 2, 3])
+    monkeypatch.setattr(gm.time, "time", lambda: next(fake_time))
+    assert detector.hit("u", "سلام") is False
+    assert detector.hit("u", "سلام") is False
+    assert detector.hit("u", "سلام") is True
 
 
-def test_repeat_ignores_empty_text():
+def test_repeat_ignores_empty_text(monkeypatch):
     gm = load_example("group_moderator")
     detector = gm.RepeatDetector(max_count=1, window_seconds=30)
-    assert detector.hit("u", "   ", now=1) is False
+    fake_time = iter([1])
+    monkeypatch.setattr(gm.time, "time", lambda: next(fake_time))
+    assert detector.hit("u", "   ") is False
 
 
 def test_ai_provider_prompt():
@@ -207,8 +215,15 @@ class FakeClient:
 def test_group_moderator_rules_command_from_admin(monkeypatch, tmp_path):
     gm = load_example("group_moderator")
     monkeypatch.setattr(gm, "SESSION_DIR", str(tmp_path))
+    monkeypatch.setattr(gm, "STATE_PATH", str(tmp_path / "moderator_state_v2.json"))
+    monkeypatch.setattr(gm, "LOG_PATH", tmp_path / "moderator_log.jsonl")
     moderator = gm.GroupModerator(FakeClient())
-    monkeypatch.setattr(moderator, "_is_admin_or_creator", lambda _sender: True)
+    monkeypatch.setattr(moderator, "_get_admin_level", lambda *a, **k: gm.AdminLevel.OWNER)
+    monkeypatch.setattr(moderator, "_is_admin_or_above", lambda *a, **k: True)
+    if hasattr(moderator, "is_admin_or_above"):
+        monkeypatch.setattr(moderator, "is_admin_or_above", lambda *a, **k: True)
+    # legacy compat
+    monkeypatch.setattr(moderator, "_is_admin_or_creator", lambda *a, **k: True, raising=False)
     item = gm.ModerationEvent("1", "chat", gm.GROUP_NAME, "admin", "admin", "/rules", False, True, False, False)
     assert moderator._handle_command(item) is True
     assert moderator.client.sent[0][0] == "reply"
@@ -217,6 +232,8 @@ def test_group_moderator_rules_command_from_admin(monkeypatch, tmp_path):
 def test_group_moderator_forwards_matching_group(monkeypatch, tmp_path):
     gm = load_example("group_moderator")
     monkeypatch.setattr(gm, "SESSION_DIR", str(tmp_path))
+    monkeypatch.setattr(gm, "STATE_PATH", str(tmp_path / "moderator_state_v2.json"))
+    monkeypatch.setattr(gm, "LOG_PATH", tmp_path / "moderator_log.jsonl")
     moderator = gm.GroupModerator(FakeClient())
     event = SimpleNamespace(data={"chat_name": gm.GROUP_NAME, "is_group": True, "text": "x"})
     moderator.on_event(event)
